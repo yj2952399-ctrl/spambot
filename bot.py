@@ -137,7 +137,12 @@ class SpamView(discord.ui.View):
             await interaction.response.send_message("既に送信中です。少々お待ちください。", ephemeral=True)
             return
 
+        # Mark running and disable the button to avoid duplicate presses
         self.running = True
+        try:
+            button.disabled = True
+        except Exception:
+            pass
 
         # 常時表示されるメッセージに編集（ephemeral ではなくチャンネルに表示される前提）
         await interaction.response.edit_message(
@@ -202,6 +207,13 @@ class SpamView(discord.ui.View):
         # 完了表示（編集）
         try:
             await interaction.followup.send("✅ 送信が完了しました。", ephemeral=True)
+            # Re-enable buttons on the view before editing the original message
+            try:
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button):
+                        child.disabled = False
+            except Exception:
+                pass
             await interaction.edit_original_response(content=f"✅ **スパム送信が完了しました** （{count}回）", view=self)
         except Exception:
             pass
@@ -223,6 +235,13 @@ class SpamAllView(discord.ui.View):
         if self.running:
             await interaction.response.send_message("既に全チャンネル送信が動作中です。", ephemeral=True)
             return
+
+        # Mark running and disable the button to avoid duplicate presses
+        self.running = True
+        try:
+            button.disabled = True
+        except Exception:
+            pass
 
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
@@ -248,6 +267,12 @@ class SpamAllView(discord.ui.View):
             await interaction.response.send_message("既に全チャンネル送信が動作中です。", ephemeral=True)
             return
 
+        self.running = True
+        try:
+            button.disabled = True
+        except Exception:
+            pass
+
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
 
@@ -262,7 +287,6 @@ class SpamAllView(discord.ui.View):
             view=self
         )
 
-        self.running = True
         asyncio.create_task(self._send_all(interaction, guild, channels, send_count))
 
     async def _send_all(
@@ -352,8 +376,9 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
     view = SpamView(mention=mention, mention_reason=mention_reason)
 
     # 重要: ephemeral を False にしてチャンネルに常時表示する（ボタン押下後の表示を常に見られるようにする）
+    # 統一: 押す前後で表示が変わらないように、開始時のメッセージを「スパムを開始します」版で統一
     await interaction.response.send_message(
-        f"# 📢 **スパムコントロールパネル**\n## **送信回数: {send_count}回**\n## **間隔: {SEND_INTERVAL}秒**\n## **@everyone: {mention_reason}**",
+        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}**\n## ⚠️ 実行中...",
         view=view,
         ephemeral=False
     )
