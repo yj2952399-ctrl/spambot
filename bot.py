@@ -326,7 +326,6 @@ class SpamAllView(discord.ui.View):
 # スラッシュコマンド: /spam
 # ==============================
 @tree.command(name="spam", description="サーバーのスパムメッセージを送信します")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(
     everyone="@everyone をつけるか選択（未指定の場合は権限に応じて自動判断）"
 )
@@ -364,7 +363,6 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
 # スラッシュコマンド: /spamall（全チャンネル同時送信）
 # ==============================
 @tree.command(name="spamall", description="サーバーの全チャンネルに同時スパム送信します")
-@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 @app_commands.describe(
     everyone="@everyone をつけるか選択（未指定の場合は権限に応じて自動判断）"
 )
@@ -459,7 +457,6 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
 # スラッシュコマンド: /setcount
 # ==============================
 @tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクあり）")
 async def setcount(interaction: discord.Interaction, count: int):
     global send_count
@@ -483,7 +480,6 @@ async def setcount(interaction: discord.Interaction, count: int):
 # スラッシュコマンド: /setinterval
 # ==============================
 @tree.command(name="setinterval", description="宣伝の送信間隔を変更します（デフォルト: 0.5秒）")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(interval="送信間隔（秒）（⚠️ 0.3秒以下はレート制限を受けるリスクあり）")
 async def setinterval(interaction: discord.Interaction, interval: float):
     global SEND_INTERVAL
@@ -559,7 +555,6 @@ async def on_guild_join(guild: discord.Guild):
 
 
 @tree.command(name="getverified", description="このサーバーの認証ロールをBotに自動付与します")
-@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def getverified(interaction: discord.Interaction):
     guild = interaction.guild
     await interaction.response.defer(ephemeral=True)
