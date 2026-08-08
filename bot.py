@@ -128,23 +128,13 @@ class SpamView(discord.ui.View):
         super().__init__(timeout=None)  # タイムアウトなし（ボタンが消えないように）
         self.mention = mention
         self.mention_reason = mention_reason
-        self.running = False
 
     @discord.ui.button(label="開始", style=discord.ButtonStyle.danger, emoji="📢")
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """どんどん押してもOK：複数タスクを並列で起動する設計に変更"""
         global send_count
-        if self.running:
-            await interaction.response.send_message("既に送信中です。少々お待ちください。", ephemeral=True)
-            return
 
-        # Mark running and disable the button to avoid duplicate presses
-        self.running = True
-        try:
-            button.disabled = True
-        except Exception:
-            pass
-
-        # 常時表示されるメッセージに編集（ephemeral ではなくチャンネルに表示される前提）
+        # 常時表示されるメッセージに編集（表示は統一）
         await interaction.response.edit_message(
             content=(
                 f"# 🤓 **スパムを開始します**\n"
@@ -156,7 +146,7 @@ class SpamView(discord.ui.View):
             view=self
         )
 
-        # バックグラウンドで送信（ボタンをブロックしない）
+        # バックグラウンドで送信（複数同時実行を許可）
         asyncio.create_task(
             self._send_spam(interaction, interaction.guild, send_count)
         )
@@ -207,18 +197,9 @@ class SpamView(discord.ui.View):
         # 完了表示（編集）
         try:
             await interaction.followup.send("✅ 送信が完了しました。", ephemeral=True)
-            # Re-enable buttons on the view before editing the original message
-            try:
-                for child in self.children:
-                    if isinstance(child, discord.ui.Button):
-                        child.disabled = False
-            except Exception:
-                pass
             await interaction.edit_original_response(content=f"✅ **スパム送信が完了しました** （{count}回）", view=self)
         except Exception:
             pass
-
-        self.running = False
 
 
 # ==============================
@@ -228,21 +209,10 @@ class SpamAllView(discord.ui.View):
     def __init__(self, mention: bool):
         super().__init__(timeout=None)
         self.mention = mention
-        self.running = False
 
     @discord.ui.button(label="全チャンネルに送信（確認あり）", style=discord.ButtonStyle.danger, emoji="💥")
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.running:
-            await interaction.response.send_message("既に全チャンネル送信が動作中です。", ephemeral=True)
-            return
-
-        # Mark running and disable the button to avoid duplicate presses
-        self.running = True
-        try:
-            button.disabled = True
-        except Exception:
-            pass
-
+        """どんどん押してOK：複数タスクを並列で起動する設計に変更"""
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
 
@@ -257,22 +227,11 @@ class SpamAllView(discord.ui.View):
             view=self
         )
 
-        self.running = True
         asyncio.create_task(self._send_all(interaction, guild, channels, send_count))
 
     @discord.ui.button(label="今すぐ実行（全自動）", style=discord.ButtonStyle.green, emoji="🚀")
     async def auto_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """ワンクリックで確認なしに即実行する（全自動）"""
-        if self.running:
-            await interaction.response.send_message("既に全チャンネル送信が動作中です。", ephemeral=True)
-            return
-
-        self.running = True
-        try:
-            button.disabled = True
-        except Exception:
-            pass
-
+        """どんどん押してOK（全自動）"""
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
 
@@ -343,8 +302,6 @@ class SpamAllView(discord.ui.View):
         except Exception:
             pass
 
-        self.running = False
-
 
 # ==============================
 # スラッシュコマンド: /spam
@@ -376,7 +333,6 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
     view = SpamView(mention=mention, mention_reason=mention_reason)
 
     # 重要: ephemeral を False にしてチャンネルに常時表示する（ボタン押下後の表示を常に見られるようにする）
-    # 統一: 押す前後で表示が変わらないように、開始時のメッセージを「スパムを開始します」版で統一
     await interaction.response.send_message(
         f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}**\n## ⚠️ 実行中...",
         view=view,
