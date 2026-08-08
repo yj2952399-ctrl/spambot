@@ -352,7 +352,7 @@ class SpamAllView(discord.ui.View):
             except Exception:
                 pass
     
-            except Exception as e:
+         except Exception as e:
                 print(f"[spamall] 実行中エラー: {e}")
                 traceback.print_exc()
     
