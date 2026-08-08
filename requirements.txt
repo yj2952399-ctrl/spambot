@@ -1,1 +1,6 @@
-discord.py==2.3.2 aiohttp==3.8.5 websockets==10.4 yarl==1.9.2 multidict==6.0.4 Pillow==10.0.1
+discord.py==2.3.2 
+aiohttp==3.8.5 
+websockets==10.4 
+yarl==1.9.2 
+multidict==6.0.4 
+Pillow==10.0.1
