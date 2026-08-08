@@ -94,7 +94,7 @@ async def get_sendable_text_channels(guild: discord.Guild) -> list[discord.TextC
                 # ただし、実際に send すると権限エラーが出ることがあるので呼び出し側で例外処理してください
                 result.append(ch)
         except Exception:
-            # チャンネルの権限計算で問題があればスキップ
+            # チャンネルの権限計算で問題がればスキップ
             continue
     return result
 
@@ -138,16 +138,34 @@ class SpamView(discord.ui.View):
         channel = interaction.channel
         guild = interaction.guild
 
-        # 表示を編集（簡潔化：『⚠️ 実行中...』を削除）
-        await interaction.response.edit_message(
-            content=(
-                f"# 🤓 **スパムを開始します**\n"
-                f"## **・送信回数: {send_count}回**\n"
-                f"## **・間隔: {SEND_INTERVAL}秒**\n"
-                f"## **・@everyone: {self.mention_reason}**"
-            ),
-            view=self
-        )
+        # まずは必ずユーザーに反応しておく（acknowledge）
+        try:
+            await interaction.response.send_message(
+                content=(
+                    f"# 🤓 **スパムを開始します**\n"
+                    f"## **・送信回数: {send_count}回**\n"
+                    f"## **・間隔: {SEND_INTERVAL}秒**\n"
+                    f"## **・@everyone: {self.mention_reason}**"
+                ),
+                ephemeral=True
+            )
+        except Exception as e:
+            # 応答に失敗した場合も続行してバックグラウンド処理を開始するがログに残す
+            print(f"[SpamView] interaction.response.send_message failed: {e}")
+            try:
+                await interaction.response.edit_message(
+                    content=(
+                        f"# 🤓 **スパムを開始します**\n"
+                        f"## **・送信回数: {send_count}回**\n"
+                        f"## **・間隔: {SEND_INTERVAL}秒**\n"
+                        f"## **・@everyone: {self.mention_reason}**"
+                    ),
+                    view=self
+                )
+            except Exception as e2:
+                print(f"[SpamView] edit_message also failed: {e2}")
+
+        print(f"[SpamView] ボタン押下: channel_id={getattr(channel,'id',None)} guild_id={getattr(guild,'id',None)} mention={self.mention}")
 
         # バックグラウンドで送信（複数同時実行を許可）
         asyncio.create_task(
@@ -193,6 +211,7 @@ class SpamView(discord.ui.View):
                             content=f"{prefix}{ad_text}",
                             allowed_mentions=discord.AllowedMentions(everyone=mention)
                         )
+                    print(f"[spam] sent {i+1}/{count} to {getattr(channel,'name',getattr(channel,'id',None))}")
                 except Exception as e:
                     print(f"送信エラー ({i + 1}回目): {e}")
                     traceback.print_exc()
@@ -226,15 +245,33 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        await interaction.response.edit_message(
-            content=(
-                f"# 💥 **全チャンネルスパム開始！**\n"
-                f"## **・対象チャンネル数: {len(channels)}個**\n"
-                f"## **・送信回数: {send_count}回**\n"
-                f"## **・合計送信数: {len(channels) * send_count}回**"
-            ),
-            view=self
-        )
+        # ack
+        try:
+            await interaction.response.send_message(
+                content=(
+                    f"# 💥 **全チャンネルスパム開始！**\n"
+                    f"## **・対象チャンネル数: {len(channels)}個**\n"
+                    f"## **・送信回数: {send_count}回**\n"
+                    f"## **・合計送信数: {len(channels) * send_count}回**"
+                ),
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"[SpamAllView] interaction.response.send_message failed: {e}")
+            try:
+                await interaction.response.edit_message(
+                    content=(
+                        f"# 💥 **全チャンネルスパム開始！**\n"
+                        f"## **・対象チャンネル数: {len(channels)}個**\n"
+                        f"## **・送信回数: {send_count}回**\n"
+                        f"## **・合計送信数: {len(channels) * send_count}回**"
+                    ),
+                    view=self
+                )
+            except Exception as e2:
+                print(f"[SpamAllView] edit_message also failed: {e2}")
+
+        print(f"[spamall] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
 
@@ -245,15 +282,21 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        await interaction.response.edit_message(
-            content=(
-                f"# 🚀 **全自動スパムを即実行します！**\n"
-                f"## **対象チャンネル数: {len(channels)}個**\n"
-                f"## **送信回数: {send_count}回**\n"
-                f"## **合計送信数: {len(channels) * send_count}回**"
-            ),
-            view=self
-        )
+        # ack
+        try:
+            await interaction.response.send_message(
+                content=(
+                    f"# 🚀 **全自動スパムを即実行します！**\n"
+                    f"## **対象チャンネル数: {len(channels)}個**\n"
+                    f"## **送信回数: {send_count}回**\n"
+                    f"## **合計送信数: {len(channels) * send_count}回**"
+                ),
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"[SpamAllView.auto] interaction.response.send_message failed: {e}")
+
+        print(f"[spamall.auto] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
 
@@ -295,6 +338,7 @@ class SpamAllView(discord.ui.View):
                                 content=f"{prefix}{ad_text}",
                                 allowed_mentions=discord.AllowedMentions(everyone=mention)
                             )
+                        print(f"[spamall] sent {i+1}/{count} to {getattr(ch,'name',getattr(ch,'id',None))}")
                     except Exception as e:
                         print(f"送信エラー [{ch.name}] ({i + 1}回目): {e}")
                         traceback.print_exc()
@@ -347,7 +391,7 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
 
     # 重要: ephemeral を False にしてチャンネルに常時表示する（ボタン押下後の表示を常に見られるようにする）
     await interaction.response.send_message(
-        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}**",
+        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}",
         view=view,
         ephemeral=False
     )
