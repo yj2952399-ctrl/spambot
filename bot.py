@@ -6,6 +6,7 @@ import asyncio
 import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import traceback
 
 # ==============================
 # 設定 (ここを自分用に変更してください)
@@ -137,14 +138,13 @@ class SpamView(discord.ui.View):
         channel = interaction.channel
         guild = interaction.guild
 
-        # 表示を編集（即座に）
+        # 表示を編集（簡潔化：『⚠️ 実行中...』を削除）
         await interaction.response.edit_message(
             content=(
                 f"# 🤓 **スパムを開始します**\n"
                 f"## **・送信回数: {send_count}回**\n"
                 f"## **・間隔: {SEND_INTERVAL}秒**\n"
-                f"## **・@everyone: {self.mention_reason}**\n"
-                f"## ⚠️ 実行中..."
+                f"## **・@everyone: {self.mention_reason}**"
             ),
             view=self
         )
@@ -162,46 +162,53 @@ class SpamView(discord.ui.View):
         mention: bool,
     ):
         """メッセージをバックグラウンドで送信する（interaction を直接使わない）"""
-        prefix = "@everyone " if mention else ""
-
-        # GIFのパスを解決
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
-        if not os.path.exists(gif_path):
-            gif_path = os.path.join(base_dir, "toykami.gif")
-
-        # 1メッセージにまとめたテキスト（枠なし）
-        ad_text = (
-            f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**\n"
-            f"# **{DEFAULT_DESCRIPTION}**\n"
-            f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**\n"
-            f"# **👥 現在のメンバー数: {guild.member_count}人**"
-        )
-
-        for i in range(count):
-            try:
-                if os.path.exists(gif_path):
-                    await channel.send(
-                        content=f"{prefix}{ad_text}",
-                        file=discord.File(gif_path, filename="toykami.gif"),
-                        allowed_mentions=discord.AllowedMentions(everyone=mention)
-                    )
-                else:
-                    await channel.send(
-                        content=f"{prefix}{ad_text}",
-                        allowed_mentions=discord.AllowedMentions(everyone=mention)
-                    )
-            except Exception as e:
-                print(f"送信エラー ({i + 1}回目): {e}")
-
-            if i < count - 1:
-                await asyncio.sleep(SEND_INTERVAL)
-
-        # 完了通知（チャンネルにメッセージ）
+        print(f"[spam] start: channel_id={getattr(channel, 'id', None)} guild_id={getattr(guild, 'id', None)} count={count} mention={mention}")
         try:
-            await channel.send("✅ 送信が完了しました。")
-        except Exception:
-            pass
+            prefix = "@everyone " if mention else ""
+
+            # GIFのパスを解決
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
+            if not os.path.exists(gif_path):
+                gif_path = os.path.join(base_dir, "toykami.gif")
+
+            # 1メッセージにまとめたテキスト（枠なし）
+            ad_text = (
+                f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**\n"
+                f"# **{DEFAULT_DESCRIPTION}**\n"
+                f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**\n"
+                f"# **👥 現在のメンバー数: {guild.member_count}人**"
+            )
+
+            for i in range(count):
+                try:
+                    if os.path.exists(gif_path):
+                        await channel.send(
+                            content=f"{prefix}{ad_text}",
+                            file=discord.File(gif_path, filename="toykami.gif"),
+                            allowed_mentions=discord.AllowedMentions(everyone=mention)
+                        )
+                    else:
+                        await channel.send(
+                            content=f"{prefix}{ad_text}",
+                            allowed_mentions=discord.AllowedMentions(everyone=mention)
+                        )
+                except Exception as e:
+                    print(f"送信エラー ({i + 1}回目): {e}")
+                    traceback.print_exc()
+
+                if i < count - 1:
+                    await asyncio.sleep(SEND_INTERVAL)
+
+            # 完了通知（チャンネルにメッセージ）
+            try:
+                await channel.send("✅ 送信が完了しました。")
+            except Exception:
+                pass
+
+        except Exception as e:
+            print(f"[spam] 例外発生: {e}")
+            traceback.print_exc()
 
 
 # ==============================
@@ -224,8 +231,7 @@ class SpamAllView(discord.ui.View):
                 f"# 💥 **全チャンネルスパム開始！**\n"
                 f"## **・対象チャンネル数: {len(channels)}個**\n"
                 f"## **・送信回数: {send_count}回**\n"
-                f"## **・合計送信数: {len(channels) * send_count}回**\n"
-                f"## ⚠️ 実行中..."
+                f"## **・合計送信数: {len(channels) * send_count}回**"
             ),
             view=self
         )
@@ -244,8 +250,7 @@ class SpamAllView(discord.ui.View):
                 f"# 🚀 **全自動スパムを即実行します！**\n"
                 f"## **対象チャンネル数: {len(channels)}個**\n"
                 f"## **送信回数: {send_count}回**\n"
-                f"## **合計送信数: {len(channels) * send_count}回**\n"
-                f"## ⚠️ 実行中..."
+                f"## **合計送信数: {len(channels) * send_count}回**"
             ),
             view=self
         )
@@ -261,50 +266,54 @@ class SpamAllView(discord.ui.View):
         mention: bool,
     ):
         """全チャンネルに並列送信する（interaction を直接使わない）"""
-        prefix = "@everyone " if mention else ""
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
-        if not os.path.exists(gif_path):
-            gif_path = os.path.join(base_dir, "toykami.gif")
-
-        ad_text = (
-            f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**\n"
-            f"# **{DEFAULT_DESCRIPTION}**\n"
-            f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**\n"
-            f"# **👥 現在のメンバー数: {guild.member_count}人**"
-        )
-
-        async def send_to_channel(ch: discord.TextChannel):
-            for i in range(count):
-                try:
-                    if os.path.exists(gif_path):
-                        await ch.send(
-                            content=f"{prefix}{ad_text}",
-                            file=discord.File(gif_path, filename="toykami.gif"),
-                            allowed_mentions=discord.AllowedMentions(everyone=mention)
-                        )
-                    else:
-                        await ch.send(
-                            content=f"{prefix}{ad_text}",
-                            allowed_mentions=discord.AllowedMentions(everyone=mention)
-                        )
-                except Exception as e:
-                    print(f"送信エラー [{ch.name}] ({i + 1}回目): {e}")
-                if i < count - 1:
-                    await asyncio.sleep(SEND_INTERVAL)
-
-        # 全チャンネルに同時並列送信（失敗しても他は続ける）
+        print(f"[spamall] start: guild_id={getattr(guild, 'id', None)} channels={len(channels)} count={count} mention={mention}")
         try:
+            prefix = "@everyone " if mention else ""
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
+            if not os.path.exists(gif_path):
+                gif_path = os.path.join(base_dir, "toykami.gif")
+
+            ad_text = (
+                f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**\n"
+                f"# **{DEFAULT_DESCRIPTION}**\n"
+                f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**\n"
+                f"# **👥 現在のメンバー数: {guild.member_count}人**"
+            )
+
+            async def send_to_channel(ch: discord.TextChannel):
+                for i in range(count):
+                    try:
+                        if os.path.exists(gif_path):
+                            await ch.send(
+                                content=f"{prefix}{ad_text}",
+                                file=discord.File(gif_path, filename="toykami.gif"),
+                                allowed_mentions=discord.AllowedMentions(everyone=mention)
+                            )
+                        else:
+                            await ch.send(
+                                content=f"{prefix}{ad_text}",
+                                allowed_mentions=discord.AllowedMentions(everyone=mention)
+                            )
+                    except Exception as e:
+                        print(f"送信エラー [{ch.name}] ({i + 1}回目): {e}")
+                        traceback.print_exc()
+                    if i < count - 1:
+                        await asyncio.sleep(SEND_INTERVAL)
+
+            # 全チャンネルに同時並列送信（失敗しても他は続ける）
             await asyncio.gather(*[send_to_channel(ch) for ch in channels])
             print(f"[spamall] 完了: {len(channels)}チャンネル × {count}回")
+
+            # 完了表示
+            try:
+                await channel.send(f"✅ 全チャンネル送信が完了しました（{len(channels)}チャンネル × {count}回）")
+            except Exception:
+                pass
+
         except Exception as e:
             print(f"[spamall] 実行中エラー: {e}")
-
-        # 完了表示
-        try:
-            await channel.send(f"✅ 全チャンネル送信が完了しました（{len(channels)}チャンネル × {count}回）")
-        except Exception:
-            pass
+            traceback.print_exc()
 
 
 # ==============================
@@ -338,7 +347,7 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
 
     # 重要: ephemeral を False にしてチャンネルに常時表示する（ボタン押下後の表示を常に見られるようにする）
     await interaction.response.send_message(
-        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}**\n## ⚠️ 実行中...",
+        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}**",
         view=view,
         ephemeral=False
     )
@@ -442,7 +451,7 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
 # スラッシュコマンド: /setcount
 # ==============================
 @tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
-@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクがあります。")
+@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクあり）")
 async def setcount(interaction: discord.Interaction, count: int):
     global send_count
 
