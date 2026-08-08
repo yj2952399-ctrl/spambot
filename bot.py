@@ -134,7 +134,10 @@ class SpamView(discord.ui.View):
         """どんどん押してもOK：複数タスクを並列で起動する設計に変更"""
         global send_count
 
-        # 常時表示されるメッセージに編集（表示は統一）
+        channel = interaction.channel
+        guild = interaction.guild
+
+        # 表示を編集（即座に）
         await interaction.response.edit_message(
             content=(
                 f"# 🤓 **スパムを開始します**\n"
@@ -148,17 +151,18 @@ class SpamView(discord.ui.View):
 
         # バックグラウンドで送信（複数同時実行を許可）
         asyncio.create_task(
-            self._send_spam(interaction, interaction.guild, send_count)
+            self._send_spam(channel, guild, send_count, self.mention)
         )
 
     async def _send_spam(
         self,
-        interaction: discord.Interaction,
+        channel: discord.TextChannel,
         guild: discord.Guild,
         count: int,
+        mention: bool,
     ):
-        """メッセージをバックグラウンドで送信する"""
-        prefix = "@everyone " if self.mention else ""
+        """メッセージをバックグラウンドで送信する（interaction を直接使わない）"""
+        prefix = "@everyone " if mention else ""
 
         # GIFのパスを解決
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -176,17 +180,16 @@ class SpamView(discord.ui.View):
 
         for i in range(count):
             try:
-                # GIF＋テキストを1メッセージで送信
                 if os.path.exists(gif_path):
-                    await interaction.followup.send(
+                    await channel.send(
                         content=f"{prefix}{ad_text}",
                         file=discord.File(gif_path, filename="toykami.gif"),
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                        allowed_mentions=discord.AllowedMentions(everyone=mention)
                     )
                 else:
-                    await interaction.followup.send(
+                    await channel.send(
                         content=f"{prefix}{ad_text}",
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                        allowed_mentions=discord.AllowedMentions(everyone=mention)
                     )
             except Exception as e:
                 print(f"送信エラー ({i + 1}回目): {e}")
@@ -194,10 +197,9 @@ class SpamView(discord.ui.View):
             if i < count - 1:
                 await asyncio.sleep(SEND_INTERVAL)
 
-        # 完了表示（編集）
+        # 完了通知（チャンネルにメッセージ）
         try:
-            await interaction.followup.send("✅ 送信が完了しました。", ephemeral=True)
-            await interaction.edit_original_response(content=f"✅ **スパム送信が完了しました** （{count}回）", view=self)
+            await channel.send("✅ 送信が完了しました。")
         except Exception:
             pass
 
@@ -215,6 +217,7 @@ class SpamAllView(discord.ui.View):
         """どんどん押してOK：複数タスクを並列で起動する設計に変更"""
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
+        channel = interaction.channel
 
         await interaction.response.edit_message(
             content=(
@@ -227,13 +230,14 @@ class SpamAllView(discord.ui.View):
             view=self
         )
 
-        asyncio.create_task(self._send_all(interaction, guild, channels, send_count))
+        asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
 
     @discord.ui.button(label="今すぐ実行（全自動）", style=discord.ButtonStyle.green, emoji="🚀")
     async def auto_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """どんどん押してOK（全自動）"""
         guild = interaction.guild
         channels = await get_sendable_text_channels(guild)
+        channel = interaction.channel
 
         await interaction.response.edit_message(
             content=(
@@ -246,17 +250,18 @@ class SpamAllView(discord.ui.View):
             view=self
         )
 
-        asyncio.create_task(self._send_all(interaction, guild, channels, send_count))
+        asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
 
     async def _send_all(
         self,
-        interaction: discord.Interaction,
+        channel: discord.TextChannel,
         guild: discord.Guild,
         channels: list,
         count: int,
+        mention: bool,
     ):
-        """全チャンネルに並列送信する"""
-        prefix = "@everyone " if self.mention else ""
+        """全チャンネルに並列送信する（interaction を直接使わない）"""
+        prefix = "@everyone " if mention else ""
         base_dir = os.path.dirname(os.path.abspath(__file__))
         gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
         if not os.path.exists(gif_path):
@@ -276,12 +281,12 @@ class SpamAllView(discord.ui.View):
                         await ch.send(
                             content=f"{prefix}{ad_text}",
                             file=discord.File(gif_path, filename="toykami.gif"),
-                            allowed_mentions=discord.AllowedMentions(everyone=True)
+                            allowed_mentions=discord.AllowedMentions(everyone=mention)
                         )
                     else:
                         await ch.send(
                             content=f"{prefix}{ad_text}",
-                            allowed_mentions=discord.AllowedMentions(everyone=True)
+                            allowed_mentions=discord.AllowedMentions(everyone=mention)
                         )
                 except Exception as e:
                     print(f"送信エラー [{ch.name}] ({i + 1}回目): {e}")
@@ -297,8 +302,7 @@ class SpamAllView(discord.ui.View):
 
         # 完了表示
         try:
-            await interaction.followup.send(f"✅ 全チャンネル送信が完了しました（{len(channels)}チャンネル × {count}回）", ephemeral=True)
-            await interaction.edit_original_response(content=f"✅ **全チャンネル送信が完了しました**（{len(channels)}チャンネル × {count}回）", view=self)
+            await channel.send(f"✅ 全チャンネル送信が完了しました（{len(channels)}チャンネル × {count}回）")
         except Exception:
             pass
 
@@ -418,12 +422,12 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
                     await ch.send(
                         content=f"{prefix}{ad_text}",
                         file=discord.File(gif_path, filename="toykami.gif"),
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                        allowed_mentions=discord.AllowedMentions(everyone=mention)
                     )
                 else:
                     await ch.send(
                         content=f"{prefix}{ad_text}",
-                        allowed_mentions=discord.AllowedMentions(everyone=True)
+                        allowed_mentions=discord.AllowedMentions(everyone=mention)
                     )
             except Exception as e:
                 print(f"送信エラー [{ch.name}]: {e}")
@@ -438,19 +442,7 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
 # スラッシュコマンド: /setcount
 # ==============================
 @tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
-@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクあり）")
-async def setcount(interaction: discord.Interaction, count: int):
-    global send_count
-
-    if count < 1:
-        await interaction.response.send_message(
-            "# ❌ **送信回数は1以上で指定してください。**",
-            ephemeral=True
-        )
-        return
-
-    send_count = count
-    warning = "\n## ⚠️ **20回以上はDiscordのレート制限を受けるリスクがあります。**" if count >= 20 else ""
+@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクがあります。**" if count >= 20 else ""
     await interaction.response.send_message(
         f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}",
         ephemeral=True
