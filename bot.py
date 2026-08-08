@@ -126,51 +126,48 @@ async def can_mention_everyone(channel: discord.TextChannel, guild: discord.Guil
 # ==============================
 class SpamView(discord.ui.View):
     def __init__(self, mention: bool, mention_reason: str):
-        super().__init__(timeout=None)  # タイムアウトなし（ボタンが消えないように）
+        super().__init__(timeout=None)
         self.mention = mention
         self.mention_reason = mention_reason
 
-    @discord.ui.button(label="開始", style=discord.ButtonStyle.danger, emoji="📢")
-    async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """どんどん押してもOK：複数タスクを並列で起動する設計に変更"""
+    @discord.ui.button(
+        label="開始",
+        style=discord.ButtonStyle.danger,
+        emoji="📢"
+    )
+    async def start_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
         global send_count
 
         channel = interaction.channel
         guild = interaction.guild
 
-        # まずは必ずユーザーに反応しておく（acknowledge）
+        # 「宣伝を開始しました」などの追加メッセージは表示しない
         try:
-            await interaction.response.send_message(
-                content=(
-                    f"# 🤓 **スパムを開始します**\n"
-                    f"## **・送信回数: {send_count}回**\n"
-                    f"## **・間隔: {SEND_INTERVAL}秒**\n"
-                    f"## **・@everyone: {self.mention_reason}**"
-                ),
-                ephemeral=True
-            )
+            await interaction.response.defer(ephemeral=True)
         except Exception as e:
-            # 応答に失敗した場合も続行してバックグラウンド処理を開始するがログに残す
-            print(f"[SpamView] interaction.response.send_message failed: {e}")
-            try:
-                await interaction.response.edit_message(
-                    content=(
-                        f"# 🤓 **スパムを開始します**\n"
-                        f"## **・送信回数: {send_count}回**\n"
-                        f"## **・間隔: {SEND_INTERVAL}秒**\n"
-                        f"## **・@everyone: {self.mention_reason}**"
-                    ),
-                    view=self
-                )
-            except Exception as e2:
-                print(f"[SpamView] edit_message also failed: {e2}")
+            print(f"[SpamView] interaction defer failed: {e}")
 
-        print(f"[SpamView] ボタン押下: channel_id={getattr(channel,'id',None)} guild_id={getattr(guild,'id',None)} mention={self.mention}")
-
-        # バックグラウンドで送信（複数同時実行を許可）
-        asyncio.create_task(
-            self._send_spam(channel, guild, send_count, self.mention)
+        print(
+            f"[SpamView] ボタン押下: "
+            f"channel_id={getattr(channel, 'id', None)} "
+            f"guild_id={getattr(guild, 'id', None)} "
+            f"mention={self.mention}"
         )
+
+        # バックグラウンドで宣伝処理
+        asyncio.create_task(
+            self._send_spam(
+                channel,
+                guild,
+                send_count,
+                self.mention
+            )
+        )
+
 
     async def _send_spam(
         self,
