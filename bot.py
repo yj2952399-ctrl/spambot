@@ -442,7 +442,19 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
 # スラッシュコマンド: /setcount
 # ==============================
 @tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
-@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクがあります。**" if count >= 20 else ""
+@app_commands.describe(count="送信回数（⚠️ 20回以上はレート制限を受けるリスクがあります。")
+async def setcount(interaction: discord.Interaction, count: int):
+    global send_count
+
+    if count < 1:
+        await interaction.response.send_message(
+            "# ❌ **送信回数は1以上で指定してください。**",
+            ephemeral=True
+        )
+        return
+
+    send_count = count
+    warning = "\n## ⚠️ **20回以上はDiscordのレート制限を受けるリスクがあります。**" if count >= 20 else ""
     await interaction.response.send_message(
         f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}",
         ephemeral=True
