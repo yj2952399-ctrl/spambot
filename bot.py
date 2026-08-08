@@ -354,16 +354,16 @@ class SpamAllView(discord.ui.View):
                 await channel.send(f"✅ 全チャンネル送信が完了しました（{len(channels)}チャンネル × {count}回）")
             except Exception:
                 pass
-
-        except Exception as e:
-            print(f"[spamall] 実行中エラー: {e}")
-            traceback.print_exc()
-
-
+    
+            except Exception as e:
+                print(f"[spamall] 実行中エラー: {e}")
+                traceback.print_exc()
+    
+    
 # ==============================
 # スラッシュコマンド: /spam
 # ==============================
-@tree.command(name="spam", description="サーバーのスパムメッセージを送信します")
+@tree.command(name="spam", description="サーバーの宣伝メッセージを送信します")
 @app_commands.describe(
     everyone="@everyone をつけるか選択（未指定の場合は権限に応じて自動判断）"
 )
@@ -385,16 +385,22 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
         mention_reason = "手動で指定（なし）"
     else:
         mention = await can_mention_everyone(channel, guild)
-        mention_reason = f"自動判定（{'権限あり → つける' if mention else '権限なし → つけない'}）"
+        mention_reason = (
+            f"自動判定（{'権限あり → つける' if mention else '権限なし → つけない'}）"
+        )
 
-    view = SpamView(mention=mention, mention_reason=mention_reason)
-
-    # 重要: ephemeral を False にしてチャンネルに常時表示する（ボタン押下後の表示を常に見られるようにする）
-    await interaction.response.send_message(
-        f"# 🤓 **スパムを開始します**\n## **・送信回数: {send_count}回**\n## **・間隔: {SEND_INTERVAL}秒**\n## **・@everyone: {mention_reason}",
-        view=view,
-        ephemeral=False
+    view = SpamView(
+        mention=mention,
+        mention_reason=mention_reason
     )
+
+    # このメッセージは実行した本人だけに表示
+    await interaction.response.send_message(
+        content="🤓 **スパム開始するチー！**",
+        view=view,
+        ephemeral=True
+    )
+
 
 
 # ==============================
