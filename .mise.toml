@@ -1,0 +1,7 @@
+[settings.python]
+# Disable GitHub artifact attestation verification so mise can install Python without GitHub attestations
+github_attestations = false
+
+# Optionally enable verbose output to help debugging
+[mise]
+verbose = true
