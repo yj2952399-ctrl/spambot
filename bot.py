@@ -1,4 +1,3 @@
-# 修正済み bot.py
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -62,15 +61,12 @@ async def get_bot_member(guild: discord.Guild) -> discord.Member | None:
     """Bot の Member オブジェクトを可能な限り取得する（キャッシュ → guild.me → fetch）"""
     if guild is None:
         return None
-    # 優先: guild.me（最も確実）
     bot_member = guild.me
     if bot_member:
         return bot_member
-    # 代替: get_member
     bot_member = guild.get_member(bot.user.id) if bot.user else None
     if bot_member:
         return bot_member
-    # フェッチで取得してみる（例外処理）
     try:
         bot_member = await guild.fetch_member(bot.user.id)
         return bot_member
@@ -90,24 +86,10 @@ async def get_sendable_text_channels(guild: discord.Guild) -> list[discord.TextC
                 if ch.permissions_for(bot_member).send_messages:
                     result.append(ch)
             else:
-                # bot_member が取れない場合は conservative に try/catch で送信を許すか試すために include しておく
-                # ただし、実際に send すると権限エラーが出ることがあるので呼び出し側で例外処理してください
                 result.append(ch)
         except Exception:
-            # チャンネルの権限計算で問題がればスキップ
             continue
     return result
-
-
-def can_mention_everyone_local(channel: discord.TextChannel, guild: discord.Guild, bot_member: discord.Member | None) -> bool:
-    """同期的に権限を判定する補助（非推奨：基本は非同期 get_bot_member を使う）"""
-    if bot_member is None or channel is None:
-        return False
-    try:
-        perms = channel.permissions_for(bot_member)
-        return perms.mention_everyone
-    except Exception:
-        return False
 
 
 async def can_mention_everyone(channel: discord.TextChannel, guild: discord.Guild) -> bool:
@@ -144,7 +126,7 @@ class SpamView(discord.ui.View):
 
         channel = interaction.channel
         guild = interaction.guild
-        
+
         print(
             f"[DEBUG BUTTON] "
             f"guild={interaction.guild} "
@@ -152,8 +134,7 @@ class SpamView(discord.ui.View):
             f"channel={interaction.channel} "
             f"channel_id={getattr(interaction.channel, 'id', None)}"
         )
-        
-        # deferで応答待機状態にし、バックグラウンド処理を開始
+
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -166,7 +147,6 @@ class SpamView(discord.ui.View):
             f"mention={self.mention}"
         )
 
-        # バックグラウンドで宣伝処理（応答不要）
         asyncio.create_task(
             self._send_spam(
                 channel,
@@ -175,8 +155,7 @@ class SpamView(discord.ui.View):
                 self.mention
             )
         )
-        
-        # defer後はfollowupで応答を完了させる必要がある（空でも可）
+
         try:
             await interaction.followup.send("🚀", ephemeral=True)
         except Exception as e:
@@ -192,31 +171,28 @@ class SpamView(discord.ui.View):
     ):
         """メッセージをバックグラウンドで送信する"""
         print(f"[spam] start: channel_id={getattr(channel, 'id', None)} guild_id={getattr(guild, 'id', None)} count={count} mention={mention}")
-        
+
         if channel is None:
             print("[spam] ERROR: channel is None")
             return
-            
+
         try:
             prefix = "@everyone " if mention else ""
 
-            # GIFのパスを解決（make_gif.py の出力パス）
             base_dir = os.path.dirname(os.path.abspath(__file__))
             gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
             if not os.path.exists(gif_path):
                 gif_path = os.path.join(base_dir, "toykami.gif")
 
-            # 元の宣伝テキスト（DEFAULT_DESCRIPTION使用）
             ad_lines = [
                 f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**",
                 f"# **{DEFAULT_DESCRIPTION}**",
                 f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**",
             ]
-            
-            # サーバー内の場合のみメンバー数を追加
+
             if guild is not None:
                 ad_lines.append(f"# **👥 現在のメンバー数: {guild.member_count}人**")
-            
+
             ad_text = "\n".join(ad_lines)
 
             for i in range(count):
@@ -259,7 +235,6 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        # deferで応答待機状態に
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -268,8 +243,7 @@ class SpamAllView(discord.ui.View):
         print(f"[spamall] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
-        
-        # defer後はfollowupで応答を完了させる必要がある
+
         try:
             await interaction.followup.send("🚀", ephemeral=True)
         except Exception as e:
@@ -281,7 +255,6 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        # deferで応答待機状態に
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -290,8 +263,7 @@ class SpamAllView(discord.ui.View):
         print(f"[spamall.auto] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
-        
-        # defer後はfollowupで応答を完了させる必要がある
+
         try:
             await interaction.followup.send("🚀", ephemeral=True)
         except Exception as e:
@@ -314,16 +286,15 @@ class SpamAllView(discord.ui.View):
             if not os.path.exists(gif_path):
                 gif_path = os.path.join(base_dir, "toykami.gif")
 
-            # 元の宣伝テキスト（DEFAULT_DESCRIPTION使用）
             ad_lines = [
                 f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**",
                 f"# **{DEFAULT_DESCRIPTION}**",
                 f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**",
             ]
-            
+
             if guild is not None:
                 ad_lines.append(f"# **👥 現在のメンバー数: {guild.member_count}人**")
-            
+
             ad_text = "\n".join(ad_lines)
 
             async def send_to_channel(ch: discord.TextChannel):
@@ -347,7 +318,6 @@ class SpamAllView(discord.ui.View):
                     if i < count - 1:
                         await asyncio.sleep(SEND_INTERVAL)
 
-            # 全チャンネルに同時並列送信（失敗しても他は続ける）
             await asyncio.gather(*[send_to_channel(ch) for ch in channels])
             print(f"[spamall] 完了: {len(channels)}チャンネル × {count}回")
 
@@ -372,14 +342,23 @@ class SpamAllView(discord.ui.View):
 async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
     channel = interaction.channel
     guild = interaction.guild
-    print(
-        f"[DEBUG /spam] "
-        f"guild={interaction.guild} "
-        f"guild_id={getattr(interaction.guild, 'id', None)} "
-        f"channel={interaction.channel} "
-        f"channel_id={getattr(interaction.channel, 'id', None)}"
-    )
-    
+
+    # ✅ 事前権限チェック
+    bot_member = await get_bot_member(guild)
+    can_send = False
+    if bot_member and channel:
+        try:
+            can_send = channel.permissions_for(bot_member).send_messages
+        except Exception:
+            pass
+    if not can_send:
+        await interaction.response.send_message(
+            "❌ **このチャンネルには送信権限がありません**\n"
+            "Botのロールに「メッセージを送信する」権限を付与してください。",
+            ephemeral=True
+        )
+        return
+
     if everyone == "yes":
         mention = True
         mention_reason = "手動で指定（あり）"
@@ -397,16 +376,15 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
         mention_reason=mention_reason
     )
 
-    # ephemeral=Trueで本人のみ表示（ボタンを連続で押せるように）
     await interaction.response.send_message(
-        content="🤓 **スパム開始するチー！**",
+        "🤓 **スパム開始するチー！**",
         view=view,
         ephemeral=True
     )
 
 
 # ==============================
-# スラッシュコマンド: /spamall（全チャンネル同時送信）
+# スラッシュコマンド: /spamall
 # ==============================
 @tree.command(name="spamall", description="サーバーの全チャンネルに同時スパム送信します")
 @app_commands.describe(
@@ -422,6 +400,16 @@ async def spamall(interaction: discord.Interaction, everyone: str = "auto"):
     guild = interaction.guild
     channel = interaction.channel
 
+    # ✅ 事前権限チェック
+    channels = await get_sendable_text_channels(guild)
+    if not channels:
+        await interaction.response.send_message(
+            "❌ **送信可能なチャンネルが存在しません**\n"
+            "Botに「メッセージを送信する」権限を付与してください。",
+            ephemeral=True
+        )
+        return
+
     if everyone == "yes":
         mention = True
     elif everyone == "no":
@@ -429,9 +417,7 @@ async def spamall(interaction: discord.Interaction, everyone: str = "auto"):
     else:
         mention = await can_mention_everyone(channel, guild)
 
-    channels = await get_sendable_text_channels(guild)
     ch_count = len(channels)
-
     view = SpamAllView(mention=mention)
     await interaction.response.send_message(
         content=(
@@ -442,7 +428,7 @@ async def spamall(interaction: discord.Interaction, everyone: str = "auto"):
             f"## ⚠️ **本当に実行しますか？**"
         ),
         view=view,
-        ephemeral=True  # 本人のみ表示に変更（連続実行可能に）
+        ephemeral=True
     )
 
 
@@ -469,16 +455,15 @@ async def spamall_prefix(ctx: commands.Context, everyone: str = "auto"):
 
     channels = await get_sendable_text_channels(guild)
 
-    # 元の宣伝テキスト（DEFAULT_DESCRIPTION使用）
     ad_lines = [
         f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**",
         f"# **{DEFAULT_DESCRIPTION}**",
         f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**",
     ]
-    
+
     if guild is not None:
         ad_lines.append(f"# **👥 現在のメンバー数: {guild.member_count}人**")
-    
+
     ad_text = "\n".join(ad_lines)
 
     async def send_to_channel(ch: discord.TextChannel):
@@ -551,7 +536,7 @@ async def setinterval(interaction: discord.Interaction, interval: float):
 
 
 # ==============================
-# プレフィックスコマンド: !setinterval（スラッシュが使えない場合の予備）
+# プレフィックスコマンド: !setinterval
 # ==============================
 @bot.command(name="setinterval")
 async def setinterval_prefix(ctx: commands.Context, interval: float = 0.5):
@@ -567,7 +552,7 @@ async def setinterval_prefix(ctx: commands.Context, interval: float = 0.5):
 
 
 # ==============================
-# 認証ロール自動付与（既存コード）
+# 認証ロール自動付与
 # ==============================
 VERIFIED_KEYWORDS = ["認証済", "verified", "メンバー", "member", "認証", "verify", "✅", "承認"]
 
@@ -635,7 +620,6 @@ async def on_ready():
     except Exception as e:
         print(f"コマンド同期エラー: {e}")
 
-    # 起動時に全サーバーで認証ロールを自動取得
     for guild in bot.guilds:
         await auto_get_verified(guild)
 
@@ -645,7 +629,7 @@ async def on_ready():
 # ==============================
 import time
 
-start_keep_alive()  # スリープ防止サーバーを起動
+start_keep_alive()
 
 while True:
     try:
