@@ -373,7 +373,13 @@ class SpamAllView(discord.ui.View):
 async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
     channel = interaction.channel
     guild = interaction.guild
-
+    print(
+        f"[DEBUG /spam] "
+        f"guild={interaction.guild} "
+        f"guild_id={getattr(interaction.guild, 'id', None)} "
+        f"channel={interaction.channel} "
+        f"channel_id={getattr(interaction.channel, 'id', None)}"
+    )
     if everyone == "yes":
         mention = True
         mention_reason = "手動で指定（あり）"
