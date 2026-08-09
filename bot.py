@@ -75,17 +75,14 @@ async def get_bot_member(guild: discord.Guild) -> discord.Member | None:
 
 
 async def get_sendable_text_channels(guild: discord.Guild) -> list[discord.TextChannel]:
-    """Bot が実際に send_messages 権限を持つテキストチャンネルを取得する（失敗耐性あり）"""
+    """✅ 緩和版：閲覧できるチャンネルを返す（送信権限で弾かない）"""
     if guild is None:
         return []
     bot_member = await get_bot_member(guild)
     result = []
     for ch in guild.text_channels:
         try:
-            if bot_member:
-                if ch.permissions_for(bot_member).send_messages:
-                    result.append(ch)
-            else:
+            if bot_member and ch.permissions_for(bot_member).view_channel:
                 result.append(ch)
         except Exception:
             continue
@@ -147,6 +144,7 @@ class SpamView(discord.ui.View):
             f"mention={self.mention}"
         )
 
+        # ✅ 🚀返信を削除 → そのまま送信開始
         asyncio.create_task(
             self._send_spam(
                 channel,
@@ -155,12 +153,6 @@ class SpamView(discord.ui.View):
                 self.mention
             )
         )
-
-        try:
-            await interaction.followup.send("🚀", ephemeral=True)
-        except Exception as e:
-            print(f"[SpamView] followup failed: {e}")
-
 
     async def _send_spam(
         self,
@@ -242,12 +234,8 @@ class SpamAllView(discord.ui.View):
 
         print(f"[spamall] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
+        # ✅ 🚀返信を削除 → そのまま送信開始
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
-
-        try:
-            await interaction.followup.send("🚀", ephemeral=True)
-        except Exception as e:
-            print(f"[SpamAllView] followup failed: {e}")
 
     @discord.ui.button(label="今すぐ実行（全自動）", style=discord.ButtonStyle.green, emoji="🚀")
     async def auto_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -262,12 +250,8 @@ class SpamAllView(discord.ui.View):
 
         print(f"[spamall.auto] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
+        # ✅ 🚀返信を削除 → そのまま送信開始
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
-
-        try:
-            await interaction.followup.send("🚀", ephemeral=True)
-        except Exception as e:
-            print(f"[SpamAllView.auto] followup failed: {e}")
 
     async def _send_all(
         self,
@@ -331,7 +315,7 @@ class SpamAllView(discord.ui.View):
 # ==============================
 @tree.command(name="spam", description="サーバーの宣伝メッセージを送信します")
 @app_commands.describe(
-    everyone="@everyone をつけるか選択（未指定の場合は権限に応じて自動判断）"
+    everyone="@everyone をつけるか選択（未指定の場合自動判定）"
 )
 @app_commands.choices(
     everyone=[
@@ -343,22 +327,7 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
     channel = interaction.channel
     guild = interaction.guild
 
-    # ✅ 事前権限チェック
-    bot_member = await get_bot_member(guild)
-    can_send = False
-    if bot_member and channel:
-        try:
-            can_send = channel.permissions_for(bot_member).send_messages
-        except Exception:
-            pass
-    if not can_send:
-        await interaction.response.send_message(
-            "❌ **このチャンネルには送信権限がありません**\n"
-            "Botのロールに「メッセージを送信する」権限を付与してください。",
-            ephemeral=True
-        )
-        return
-
+    # ✅ 【緩和版】送信権限チェックを削除 → ボタンを表示
     if everyone == "yes":
         mention = True
         mention_reason = "手動で指定（あり）"
@@ -388,7 +357,7 @@ async def advertise(interaction: discord.Interaction, everyone: str = "auto"):
 # ==============================
 @tree.command(name="spamall", description="サーバーの全チャンネルに同時スパム送信します")
 @app_commands.describe(
-    everyone="@everyone をつけるか選択（未指定の場合は権限に応じて自動判断）"
+    everyone="@everyone をつけるか選択（未指定の場合自動判定）"
 )
 @app_commands.choices(
     everyone=[
@@ -400,15 +369,8 @@ async def spamall(interaction: discord.Interaction, everyone: str = "auto"):
     guild = interaction.guild
     channel = interaction.channel
 
-    # ✅ 事前権限チェック
+    # ✅ 【緩和版】取得できるチャンネルで実行
     channels = await get_sendable_text_channels(guild)
-    if not channels:
-        await interaction.response.send_message(
-            "❌ **送信可能なチャンネルが存在しません**\n"
-            "Botに「メッセージを送信する」権限を付与してください。",
-            ephemeral=True
-        )
-        return
 
     if everyone == "yes":
         mention = True
@@ -424,7 +386,7 @@ async def spamall(interaction: discord.Interaction, everyone: str = "auto"):
             f"# 💥 **全チャンネルスパム**\n"
             f"## **送信可能チャンネル数: {ch_count}個**\n"
             f"## **送信回数: {send_count}回**\n"
-            f"## **合計送信数: {ch_count * send_count}回**\n"
+            f"## **合計送信回数: {ch_count * send_count}回**\n"
             f"## ⚠️ **本当に実行しますか？**"
         ),
         view=view,
