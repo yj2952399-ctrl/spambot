@@ -144,7 +144,13 @@ class SpamView(discord.ui.View):
 
         channel = interaction.channel
         guild = interaction.guild
-
+        print(
+            f"[DEBUG BUTTON] "
+            f"guild={interaction.guild} "
+            f"guild_id={getattr(interaction.guild, 'id', None)} "
+            f"channel={interaction.channel} "
+            f"channel_id={getattr(interaction.channel, 'id', None)}"
+        )
         # 「宣伝を開始しました」などの追加メッセージは表示しない
         try:
             await interaction.response.defer(ephemeral=True)
