@@ -153,7 +153,7 @@ class SpamView(discord.ui.View):
             f"channel_id={getattr(interaction.channel, 'id', None)}"
         )
         
-        # deferのみ行い、応答メッセージは送信しない（連続押し可能にするため）
+        # deferで応答待機状態にし、バックグラウンド処理を開始
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -175,7 +175,12 @@ class SpamView(discord.ui.View):
                 self.mention
             )
         )
-        # 「送信しました」メッセージは送信しない（連続で押せるように）
+        
+        # defer後はfollowupで応答を完了させる必要がある（空でも可）
+        try:
+            await interaction.followup.send("🚀", ephemeral=True)
+        except Exception as e:
+            print(f"[SpamView] followup failed: {e}")
 
 
     async def _send_spam(
@@ -254,7 +259,7 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        # deferのみ（応答メッセージ不要）
+        # deferで応答待機状態に
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -263,6 +268,12 @@ class SpamAllView(discord.ui.View):
         print(f"[spamall] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
+        
+        # defer後はfollowupで応答を完了させる必要がある
+        try:
+            await interaction.followup.send("🚀", ephemeral=True)
+        except Exception as e:
+            print(f"[SpamAllView] followup failed: {e}")
 
     @discord.ui.button(label="今すぐ実行（全自動）", style=discord.ButtonStyle.green, emoji="🚀")
     async def auto_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -270,7 +281,7 @@ class SpamAllView(discord.ui.View):
         channels = await get_sendable_text_channels(guild)
         channel = interaction.channel
 
-        # deferのみ（応答メッセージ不要）
+        # deferで応答待機状態に
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception as e:
@@ -279,6 +290,12 @@ class SpamAllView(discord.ui.View):
         print(f"[spamall.auto] ボタン押下: guild_id={getattr(guild,'id',None)} channels={len(channels)} mention={self.mention}")
 
         asyncio.create_task(self._send_all(channel, guild, channels, send_count, self.mention))
+        
+        # defer後はfollowupで応答を完了させる必要がある
+        try:
+            await interaction.followup.send("🚀", ephemeral=True)
+        except Exception as e:
+            print(f"[SpamAllView.auto] followup failed: {e}")
 
     async def _send_all(
         self,
