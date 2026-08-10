@@ -45,7 +45,11 @@ def generate_gif():
             print(f"[GIF自動生成] フォント確認: {path} → {os.path.exists(path)}")
             if os.path.exists(path):
                 try:
-                    font = ImageFont.truetype(path, 110)
+                    # ✅ .ttc の場合はフォント名も指定する
+                    if path.endswith(".ttc"):
+                        font = ImageFont.truetype(path, 110, index=0)
+                    else:
+                        font = ImageFont.truetype(path, 110)
                     print(f"[GIF自動生成] ✅ フォント発見: {path}")
                     break
                 except Exception as e:
