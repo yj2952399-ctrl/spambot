@@ -212,9 +212,9 @@ async def cmd_spam(interaction, everyone: str = "auto"):
     print(f"[/spam] 実行: guild_id={getattr(guild, 'id', None)}, mention={mention} ({mention_reason})")
     view = SpamView(mention=mention, mention_reason=mention_reason)
     await interaction.response.send_message(
-        "🤓 **ボタンを押してスパム開始！**",
+        "🤓 **ボタンを押してスパム開始**",
         view=view,
-        ephemeral=False
+        ephemeral=True
     )
 
 # ==============================
