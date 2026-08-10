@@ -28,7 +28,7 @@ for bg, fg in zip(COLORS, TEXT_COLORS):
 
     frames.append(img)
 
-out_path = "discord_advertise_bot/toykami.gif"
+out_path = "toykami.gif"
 frames[0].save(
     out_path,
     save_all=True,
