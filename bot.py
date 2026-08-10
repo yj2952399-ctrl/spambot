@@ -29,9 +29,13 @@ def generate_gif():
         FRAME_DURATION = 100
 
         FONT_PATHS = [
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/NotoSansCJK-Bold.ttf",
         ]
 
         font = None
