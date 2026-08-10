@@ -16,16 +16,13 @@ def generate_gif():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     out_path = os.path.join(BASE_DIR, "toykami.gif")
 
-    print(f"[GIF自動生成] 📁 作業場所: {BASE_DIR}")
-    print(f"[GIF自動生成] 📁 出力先: {out_path}")
-
     WIDTH, HEIGHT = 800, 600
     TEXT = "トイ神の集い"
     COLORS = [(220, 30, 30), (30, 60, 200), (255, 255, 255)]
     TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
     FRAME_DURATION = 100
 
-    # ✅ フォントの候補を全部試す
+    # ✅ フォント候補を全部試す
     FONT_PATHS = [
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
@@ -42,12 +39,11 @@ def generate_gif():
             except Exception as e:
                 print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {e}")
 
-    # ❌ フォントが見つからない場合
     if font is None:
-        print("[GIF自動生成] ❌ フォントが見つかりません。Dockerfileでのデプロイを推奨")
-        return False  # ✅ 関数の中に正しく入っている
+        print("[GIF自動生成] ❌ フォントが見つかりません")
+        return False
 
-    # ✅ GIF作成
+    # ✅ ↓ ここからGIF作成本体 ↓
     frames = []
     for bg, fg in zip(COLORS, TEXT_COLORS):
         img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
@@ -61,7 +57,6 @@ def generate_gif():
         draw.text((x, y), TEXT, font=font, fill=fg)
         frames.append(img)
 
-    # ✅ GIF保存
     try:
         frames[0].save(
             out_path,
@@ -78,7 +73,7 @@ def generate_gif():
         print(f"[GIF自動生成] ❌ 保存エラー: {type(e).__name__}: {e}")
         return False
 
-# ✅ 起動時に実行（関数の外には何も書かない！）
+# ✅ 起動時に実行（これより下には何も書かない！）
 generate_gif()
 
     frames = []
