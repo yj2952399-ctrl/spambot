@@ -13,34 +13,69 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 
 def generate_gif():
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    out_path = os.path.join(BASE_DIR, "toykami.gif")
+    print("[GIF自動生成] 🚀 === 開始 ===")
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        out_path = os.path.join(BASE_DIR, "toykami.gif")
+        print(f"[GIF自動生成] 📁 出力先: {out_path}")
+        print(f"[GIF自動生成] 📁 存在する？ → {os.path.exists(out_path)}")
 
-    WIDTH, HEIGHT = 800, 600
-    TEXT = "トイ神の集い"
-    COLORS = [(220, 30, 30), (30, 60, 200), (255, 255, 255)]
-    TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
-    FRAME_DURATION = 100
+        WIDTH, HEIGHT = 800, 600
+        TEXT = "トイ神の集い"
+        COLORS = [(220, 30, 30), (30, 60, 200), (255, 255, 255)]
+        TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
+        FRAME_DURATION = 100
 
-    # ✅ フォント候補を全部試す
-    FONT_PATHS = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
-    ]
+        FONT_PATHS = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+        ]
 
-    font = None
-    for path in FONT_PATHS:
-        if os.path.exists(path):
-            try:
-                font = ImageFont.truetype(path, 110)
-                print(f"[GIF自動生成] ✅ フォント発見: {path}")
-                break
-            except Exception as e:
-                print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {e}")
+        font = None
+        for path in FONT_PATHS:
+            print(f"[GIF自動生成] フォント確認: {path} → {os.path.exists(path)}")
+            if os.path.exists(path):
+                try:
+                    font = ImageFont.truetype(path, 110)
+                    print(f"[GIF自動生成] ✅ フォント発見: {path}")
+                    break
+                except Exception as e:
+                    print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {type(e).__name__}: {e}")
 
-    if font is None:
-        print("[GIF自動生成] ❌ フォントが見つかりません")
+        if font is None:
+            print("[GIF自動生成] ❌ どのフォントも見つかりません")
+            return False
+
+        frames = []
+        for bg, fg in zip(COLORS, TEXT_COLORS):
+            img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
+            draw = ImageDraw.Draw(img)
+            bbox = draw.textbbox((0, 0), TEXT, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            x = (WIDTH - text_w) / 2 - bbox[0]
+            y = (HEIGHT - text_h) / 2 - bbox[1]
+            draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
+            draw.text((x, y), TEXT, font=font, fill=fg)
+            frames.append(img)
+
+        frames[0].save(
+            out_path,
+            save_all=True,
+            append_images=frames[1:],
+            loop=0,
+            duration=FRAME_DURATION,
+            optimize=False,
+            disposal=2,
+        )
+        print(f"[GIF自動生成] ✅ 成功！→ {out_path}")
+        return True
+
+    except Exception as e:
+        print(f"[GIF自動生成] ❌ 致命的エラー: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
     # ✅ ↓ ここからGIF作成本体 ↓
