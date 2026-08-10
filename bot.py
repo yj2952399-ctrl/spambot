@@ -7,9 +7,9 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import traceback
 # ==============================================
-# ✅ Bot起動時に自動的にGIFを生成（エラー回避版）
+# ✅ Bot起動時に自動的にGIFを生成（最終完全版）
 # ==============================================
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import os
 
 def generate_gif():
@@ -20,14 +20,13 @@ def generate_gif():
     print(f"[GIF自動生成] 📁 出力先: {out_path}")
 
     WIDTH, HEIGHT = 800, 600
-    TEXT = "トイ神の集い"
+    TEXT = "TISN\nトイ神の集い"
     COLORS = [(220, 30, 30), (30, 60, 200), (255, 255, 255)]
     TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
     FRAME_DURATION = 100
 
-    # フォントを探す
+    # ✅ フォントを探す
     font = None
-    font_size = 110
     font_paths = [
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.otf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
@@ -36,49 +35,38 @@ def generate_gif():
     for path in font_paths:
         if os.path.exists(path):
             try:
-                font = ImageFont.truetype(path, size=font_size)
+                from PIL import ImageFont
+                font = ImageFont.truetype(path, size=110)
                 print(f"[GIF自動生成] ✅ フォント: {path}")
                 break
             except Exception as e:
-                print(f"[GIF自動生成] ⚠️ フォント読み込み失敗: {e}")
-
-    # ✅ フォントが無い場合 → サイズ固定・座標直接指定で回避
-    if font is None:
-        print("[GIF自動生成] ⚠️ フォントなし → 代替方式で作成")
-        font_size = 80  # 小さめに固定
-        # 文字サイズを固定値で仮定（textbboxを使わない）
-        text_w = 600
-        text_h = 120
-        x = (WIDTH - text_w) / 2
-        y = (HEIGHT - text_h) / 2
-        USE_FIXED_POS = True
-    else:
-        USE_FIXED_POS = False
+                print(f"[GIF自動生成] ⚠️ 読み込み失敗: {e}")
 
     frames = []
 
-    for bg, fg in zip(COLORS, TEXT_COLORS):
-        img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
-        draw = ImageDraw.Draw(img)
-
-        if USE_FIXED_POS:
-            # ✅ 固定座標（エラー回避）
-            x = 100
-            y = 220
-        else:
-            # 通常計算
+    if font is not None:
+        # ✅ フォントが見つかった場合：きれいに作成
+        print("[GIF自動生成] ✅ フォントあり → 標準モード")
+        for bg, fg in zip(COLORS, TEXT_COLORS):
+            img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
+            draw = ImageDraw.Draw(img)
             bbox = draw.textbbox((0, 0), TEXT, font=font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
             x = (WIDTH - text_w) / 2 - bbox[0]
             y = (HEIGHT - text_h) / 2 - bbox[1]
-
-        # 影
-        draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
-        # 本文
-        draw.text((x, y), TEXT, font=font, fill=fg)
-
-        frames.append(img)
+            draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
+            draw.text((x, y), TEXT, font=font, fill=fg)
+            frames.append(img)
+    else:
+        # ✅ フォントが無い場合 → 図形だけで作成（エラー完全回避）
+        print("[GIF自動生成] ⚠️ フォントなし → 図形モードで作成（文字なし）")
+        for bg, fg in zip(COLORS, TEXT_COLORS):
+            img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
+            draw = ImageDraw.Draw(img)
+            # 中央に四角形を描く
+            draw.rectangle([200, 150, 600, 450], fill=fg, outline=None)
+            frames.append(img)
 
     # GIF保存
     try:
