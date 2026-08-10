@@ -1,1 +1,1 @@
-worker: sh -c "python make_gif.py && python bot.py"
+worker: python bot.py
