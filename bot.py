@@ -16,6 +16,12 @@ import traceback
 
 def generate_gif():
     print("[GIF自動生成] 🚀 === 開始 ===")
+    # ✅ ここに追加！実際にフォントがどこにあるか全部表示！
+    print("[GIF自動生成] 🔍 /usr/share/fonts/ の中身:")
+    for root, dirs, files in os.walk("/usr/share/fonts"):
+        for f in files:
+            if "NotoSansCJK-Bold" in f:
+                print(f"  ✅ 発見: {os.path.join(root, f)}")
     try:
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         out_path = os.path.join(BASE_DIR, "toykami.gif")
