@@ -19,10 +19,9 @@ DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮�
 DEFAULT_INVITE_LINK = "https://discord.gg/BdB6PjNNT"
 
 SEND_INTERVAL = 0.5
-TOTAL_SEND_COUNT = 10
 
 # ==============================
-# キープアライブ
+# キープアライブ用Webサーバー
 # ==============================
 class _KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -37,7 +36,7 @@ def start_keep_alive():
     server = HTTPServer(("0.0.0.0", port), _KeepAliveHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f"キープアライブ起動: ポート {port}")
+    print(f"キープアライブサーバー起動: ポート {port}")
 
 # ==============================
 # Bot設定
@@ -48,7 +47,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-send_count = TOTAL_SEND_COUNT
+send_count = 5
 
 # ==============================
 # ユーティリティ関数
@@ -78,9 +77,7 @@ async def get_sendable_text_channels(guild):
             continue
     return result
 
-# ==============================
-# @everyone 権限判定
-# ==============================
+# ✅ @everyone 権限判定：情報なし＝権限ありと判断
 async def can_mention_everyone(interaction):
     channel = interaction.channel
     guild = interaction.guild
@@ -97,9 +94,6 @@ async def can_mention_everyone(interaction):
         print(f"[権限判定エラー] {type(e).__name__}: {e} → @everyone つける")
         return True
 
-# ==============================
-# メッセージ組み立て
-# ==============================
 def build_advertisement_text(guild):
     ad_lines = [
         f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**",
@@ -110,57 +104,56 @@ def build_advertisement_text(guild):
         ad_lines.append(f"# **👥 現在のメンバー数: {guild.member_count}人**")
     return "\n".join(ad_lines)
 
-# ==============================
-# GIFファイル添付
-# ==============================
+# ✅ GIFファイル添付（完全復元）
 def get_gif_attachment():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
-    if not os.path.exists(gif_path):
-        gif_path = os.path.join(base_dir, "toykami.gif")
-    if os.path.exists(gif_path):
-        print(f"[GIF] 発見: {gif_path}")
-        return discord.File(gif_path, filename="toykami.gif")
-    print("[GIF] ファイルが見つかりません → 画像なしで送信")
+    gif_candidates = [
+        os.path.join(base_dir, "toykami.gif"),
+        os.path.join(base_dir, "discord_advertise_bot", "toykami.gif"),
+    ]
+    for path in gif_candidates:
+        if os.path.exists(path):
+            print(f"[GIF] 発見: {path}")
+            return discord.File(path, filename="toykami.gif")
+    print("[GIF] ファイルが見つかりませんでした → 画像なしで送信")
     return None
 
 # ==============================
-# ✅ 連続送信（スパム力UP版）
+# 返信形式で連続送信
 # ==============================
-async def send_advertisement_followup(interaction, count, mention, guild):
+async def send_advertisement_followup(followup_obj, count, mention, guild):
     print(f"[送信処理] 開始: count={count}, mention={mention}, guild_id={getattr(guild, 'id', None)}")
     prefix = "@everyone " if mention else ""
     ad_text = build_advertisement_text(guild)
     gif_file = get_gif_attachment()
     allowed_mentions = discord.AllowedMentions(everyone=mention)
 
-    sent = 0
-    while sent < count:
+    for i in range(count):
         try:
-            if gif_file and sent == 0:
-                await interaction.channel.send(
+            if gif_file:
+                await followup_obj.send(
                     content=f"{prefix}{ad_text}",
                     file=gif_file,
                     allowed_mentions=allowed_mentions
                 )
+                print(f"[送信処理] {i+1}/{count} ✅ GIF添付 完了")
             else:
-                await interaction.channel.send(
+                await followup_obj.send(
                     content=f"{prefix}{ad_text}",
                     allowed_mentions=allowed_mentions
                 )
-            sent += 1
-            print(f"[送信] {sent}/{count} ✅")
+                print(f"[送信処理] {i+1}/{count} ✅ テキストのみ 完了")
         except Exception as e:
-            print(f"[送信] エラー: {type(e).__name__}: {e}")
+            print(f"[送信処理] エラー ({i+1}回目): {type(e).__name__}: {e}")
+            if "40094" in str(e):
+                print("[注意] Discord仕様: followupは最大5回まで")
             traceback.print_exc()
-            await asyncio.sleep(1)
-            continue
-        if sent < count:
+        if i < count - 1:
             await asyncio.sleep(SEND_INTERVAL)
-    print(f"[送信処理] ✅ 全{count}回 完了！")
+    print("[送信処理] 全メッセージ送信完了")
 
 # ==============================
-# 宣伝開始ボタンView（重複防止なし）
+# 宣伝開始ボタンView
 # ==============================
 class SpamView(ui.View):
     def __init__(self, mention: bool, mention_reason: str):
@@ -168,17 +161,27 @@ class SpamView(ui.View):
         self.target_mention = mention
         self.mention_reason = mention_reason
 
-    @ui.button(label="開始", style=discord.ButtonStyle.danger, emoji="📢")
+    @ui.button(
+        label="開始",
+        style=discord.ButtonStyle.danger,
+        emoji="📢"
+    )
     async def start_handler(self, interaction, btn):
+        global send_count
         guild = interaction.guild
         print(f"[ボタン押下] 設定: @everyone={self.target_mention} ({self.mention_reason})")
         try:
             await interaction.response.defer(ephemeral=False)
         except Exception as e:
-            print(f"[ボタン] defer失敗: {type(e).__name__}: {e}")
+            print(f"[ボタン処理] defer失敗: {type(e).__name__}: {e}")
             return
         asyncio.create_task(
-            send_advertisement_followup(interaction, send_count, self.target_mention, guild)
+            send_advertisement_followup(
+                interaction.followup,
+                send_count,
+                self.target_mention,
+                guild
+            )
         )
 
 # ==============================
@@ -204,27 +207,30 @@ class SpamAllView(ui.View):
 # ==============================
 # /spam コマンド
 # ==============================
-@tree.command(name="spam", description="宣伝メッセージを送信")
-@app_commands.describe(everyone="@everyone をつけるか選択")
+@tree.command(name="spam", description="宣伝メッセージを送信します（ボタンを押して実行）")
+@app_commands.describe(everyone="@everyone をつけるか選択（未指定の場合自動判定）")
 @app_commands.choices(everyone=[
     app_commands.Choice(name="つける", value="yes"),
     app_commands.Choice(name="つけない", value="no"),
 ])
 async def cmd_spam(interaction, everyone: str = "auto"):
+    channel = interaction.channel
+    guild = interaction.guild
+
     if everyone == "yes":
         mention = True
-        reason = "✅ 手動指定: @everyone つける"
+        mention_reason = "✅ 手動指定: @everyone つける"
     elif everyone == "no":
         mention = False
-        reason = "❌ 手動指定: @everyone つけない"
+        mention_reason = "❌ 手動指定: @everyone つけない"
     else:
         mention = await can_mention_everyone(interaction)
-        reason = "✅ 自動判定: 権限あり→つける" if mention else "❌ 自動判定: 権限なし→つけない"
-    
-    print(f"[/spam実行] guild_id={getattr(interaction.guild, 'id', 'None')} | {reason}")
-    view = SpamView(mention=mention, mention_reason=reason)
+        mention_reason = f"✅ 自動判定: 権限あり→つける" if mention else "❌ 自動判定: 権限なし→つけない"
+
+    print(f"[/spam実行] guild_id={getattr(guild, 'id', 'None')} | {mention_reason}")
+    view = SpamView(mention=mention, mention_reason=mention_reason)
     await interaction.response.send_message(
-        f"🤓 **ボタンを押してスパム開始！**\n📋 設定: {reason}\n📊 合計送信: {TOTAL_SEND_COUNT}回 / 間隔: {SEND_INTERVAL}秒",
+        f"🤓 **ボタンを押してスパム開始！**\n📋 設定: {mention_reason}",
         view=view,
         ephemeral=True
     )
@@ -244,29 +250,41 @@ async def cmd_spamall(interaction):
 # ==============================
 # /setcount コマンド
 # ==============================
-@tree.command(name="setcount", description="合計送信回数を変更（1～50）")
-@app_commands.describe(count="回数")
+@tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 5）")
+@app_commands.describe(count="送信回数（⚠️ 5回推奨）")
 async def cmd_setcount(interaction, count: int):
-    global send_count, TOTAL_SEND_COUNT
-    if count < 1 or count > 50:
-        await interaction.response.send_message("❌ 1～50の範囲で指定", ephemeral=True)
+    global send_count
+    if count < 1:
+        await interaction.response.send_message(
+            "# ❌ **送信回数は1以上で指定してください。**",
+            ephemeral=True
+        )
         return
     send_count = count
-    TOTAL_SEND_COUNT = count
-    await interaction.response.send_message(f"✅ 合計送信回数: {count}回", ephemeral=True)
+    warning = "\n## ⚠️ **Discord仕様上、followupは5回まで送信可能です。**" if count > 5 else ""
+    await interaction.response.send_message(
+        f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}",
+        ephemeral=True
+    )
 
 # ==============================
 # /setinterval コマンド
 # ==============================
-@tree.command(name="setinterval", description="送信間隔を変更（0.1～5秒）")
-@app_commands.describe(interval="秒数")
+@tree.command(name="setinterval", description="宣伝の送信間隔を変更します（デフォルト: 0.5秒）")
+@app_commands.describe(interval="送信間隔（秒）")
 async def cmd_setinterval(interaction, interval: float):
     global SEND_INTERVAL
-    if interval <= 0 or interval > 5:
-        await interaction.response.send_message("❌ 0より大きく5以下で指定", ephemeral=True)
+    if interval <= 0:
+        await interaction.response.send_message(
+            "# ❌ **送信間隔は0より大きい値で指定してください。**",
+            ephemeral=True
+        )
         return
     SEND_INTERVAL = interval
-    await interaction.response.send_message(f"✅ 送信間隔: {interval}秒", ephemeral=True)
+    await interaction.response.send_message(
+        f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**",
+        ephemeral=True
+    )
 
 # ==============================
 # !setinterval プレフィックスコマンド
