@@ -79,36 +79,6 @@ def generate_gif():
         import traceback
         traceback.print_exc()
         return False
-
-    # ✅ ↓ ここからGIF作成本体 ↓
-    frames = []
-    for bg, fg in zip(COLORS, TEXT_COLORS):
-        img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
-        draw = ImageDraw.Draw(img)
-        bbox = draw.textbbox((0, 0), TEXT, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        x = (WIDTH - text_w) / 2 - bbox[0]
-        y = (HEIGHT - text_h) / 2 - bbox[1]
-        draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
-        draw.text((x, y), TEXT, font=font, fill=fg)
-        frames.append(img)
-
-    try:
-        frames[0].save(
-            out_path,
-            save_all=True,
-            append_images=frames[1:],
-            loop=0,
-            duration=FRAME_DURATION,
-            optimize=False,
-            disposal=2,
-        )
-        print(f"[GIF自動生成] ✅ 成功！→ {out_path}")
-        return True
-    except Exception as e:
-        print(f"[GIF自動生成] ❌ 保存エラー: {type(e).__name__}: {e}")
-        return False
 # ✅ 起動時に実行（これより下には何も書かない！）
 generate_gif()
 # ==============================================
