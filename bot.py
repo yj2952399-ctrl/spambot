@@ -106,16 +106,26 @@ def build_advertisement_text(guild):
 
 # ✅ GIFファイル添付（完全復元）
 def get_gif_attachment():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    gif_candidates = [
-        os.path.join(base_dir, "toykami.gif"),
-        os.path.join(base_dir, "discord_advertise_bot", "toykami.gif"),
-    ]
-    for path in gif_candidates:
-        if os.path.exists(path):
-            print(f"[GIF] 発見: {path}")
-            return discord.File(path, filename="toykami.gif")
-    print("[GIF] ファイルが見つかりませんでした → 画像なしで送信")
+    # ✅ 「bot.py自身がある場所」を絶対パスで取得
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    gif_path = os.path.join(BASE_DIR, "toykami.gif")
+
+    print(f"[Bot GIF検索] 📁 自身の場所: {BASE_DIR}")
+    print(f"[Bot GIF検索] 📁 探している場所: {gif_path}")
+    print(f"[Bot GIF検索] ✅ 存在する？ → {os.path.exists(gif_path)}")
+
+    if os.path.exists(gif_path):
+        size = os.path.getsize(gif_path)
+        print(f"[Bot GIF検索] ✅ GIF発見！ サイズ: {size} bytes")
+        return discord.File(gif_path, filename="toykami.gif")
+
+    # ❌ 見つからなかった場合：同じフォルダのファイル一覧を表示
+    print("[Bot GIF検索] ❌ GIFが見つかりません。同じフォルダのファイル一覧:")
+    try:
+        for name in os.listdir(BASE_DIR):
+            print(f"  - {name}")
+    except Exception as e:
+        print(f"  一覧取得エラー: {e}")
     return None
 
 # ==============================
