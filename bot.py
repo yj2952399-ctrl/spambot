@@ -220,11 +220,12 @@ async def send_advertisement_followup(followup_obj, count, mention, guild):
     print(f"[送信処理] 開始: count={count}, mention={mention}, guild_id={getattr(guild, 'id', None)}")
     prefix = "@everyone " if mention else ""
     ad_text = build_advertisement_text(guild)
-    gif_file = get_gif_attachment()
     allowed_mentions = discord.AllowedMentions(everyone=mention)
 
     for i in range(count):
         try:
+            # ✅ ここ！「ループの中」で毎回GIFを開き直す！
+            gif_file = get_gif_attachment()
             if gif_file:
                 await followup_obj.send(
                     content=f"{prefix}{ad_text}",
