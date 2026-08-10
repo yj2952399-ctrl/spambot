@@ -1,4 +1,4 @@
-# ✅ 絶対に一番最初に書く！
+print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 from PIL import Image, ImageDraw, ImageFont
 import os
 
@@ -10,7 +10,6 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import traceback
 
-# ... これより下はそのまま ...
 # ==============================================
 # ✅ 最終版：フォントをインストールしてから作成
 # ==============================================
