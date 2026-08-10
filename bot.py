@@ -77,13 +77,22 @@ async def get_sendable_text_channels(guild):
             continue
     return result
 
-async def can_mention_everyone(channel, guild):
-    bot_member = await get_bot_member(guild)
-    if not bot_member or not channel:
+# ✅ 【修正版】@everyone 権限判定：「実行者の権限」で判定
+async def can_mention_everyone(interaction):
+    channel = interaction.channel
+    guild = interaction.guild
+    if not guild or not channel:
+        print("[権限判定] ギルド/チャンネル情報なし → @everyoneなし")
         return False
     try:
-        return channel.permissions_for(bot_member).mention_everyone
-    except Exception:
+        # ✅ Botの権限ではなく「コマンドを打った人の権限」で判定
+        member = interaction.user
+        perms = channel.permissions_for(member)
+        result = perms.mention_everyone
+        print(f"[権限判定] {member.name} の権限: mention_everyone={result}")
+        return result
+    except Exception as e:
+        print(f"[権限判定エラー] {type(e).__name__}: {e}")
         return False
 
 def build_advertisement_text(guild):
@@ -106,10 +115,10 @@ def get_gif_attachment():
     return None
 
 # ==============================
-# ✅ 返信形式で連続送信
+# 返信形式で連続送信
 # ==============================
 async def send_advertisement_followup(followup_obj, count, mention, guild):
-    print(f"[advertisement] 返信送信開始: count={count}, mention={mention}, guild_id={getattr(guild, 'id', None)}")
+    print(f"[送信処理] 開始: count={count}, mention={mention}, guild_id={getattr(guild, 'id', None)}")
     prefix = "@everyone " if mention else ""
     ad_text = build_advertisement_text(guild)
     gif_file = get_gif_attachment()
@@ -128,21 +137,21 @@ async def send_advertisement_followup(followup_obj, count, mention, guild):
                     content=f"{prefix}{ad_text}",
                     allowed_mentions=allowed_mentions
                 )
-            print(f"[advertisement] 送信完了 {i+1}/{count}")
+            print(f"[送信処理] 送信完了 {i+1}/{count} | @everyone={'✅ あり' if mention else '❌ なし'}")
         except Exception as e:
-            print(f"[advertisement] 送信エラー ({i+1}回目): {type(e).__name__}: {e}")
+            print(f"[送信処理] 送信エラー ({i+1}回目): {type(e).__name__}: {e}")
             traceback.print_exc()
         if i < count - 1:
             await asyncio.sleep(SEND_INTERVAL)
-    print("[advertisement] 全送信処理完了")
+    print("[送信処理] 全メッセージ送信完了")
 
 # ==============================
-# 宣伝開始ボタンView
+# ✅ 宣伝開始ボタンView：判定結果を保存して使う
 # ==============================
 class SpamView(ui.View):
     def __init__(self, mention: bool, mention_reason: str):
         super().__init__(timeout=None)
-        self.mention = mention
+        self.target_mention = mention   # ✅ コマンド時の判定結果を保存
         self.mention_reason = mention_reason
 
     @ui.button(
@@ -153,17 +162,21 @@ class SpamView(ui.View):
     async def start_handler(self, interaction, btn):
         global send_count
         guild = interaction.guild
-        print(f"[SpamView] ボタン押下: guild_id={getattr(guild, 'id', None)}, mention={self.mention} ({self.mention_reason})")
+
+        print(f"[ボタン押下] 保存された設定: @everyone={self.target_mention} ({self.mention_reason})")
+
         try:
             await interaction.response.defer(ephemeral=False)
         except Exception as e:
-            print(f"[SpamView] defer失敗: {type(e).__name__}: {e}")
+            print(f"[ボタン処理] defer失敗: {type(e).__name__}: {e}")
             return
+
+        # ✅ 「コマンド時に判定した結果」をそのまま使う → 再判定しない！
         asyncio.create_task(
             send_advertisement_followup(
                 interaction.followup,
                 send_count,
-                self.mention,
+                self.target_mention,  # ここが超重要
                 guild
             )
         )
@@ -189,7 +202,7 @@ class SpamAllView(ui.View):
         )
 
 # ==============================
-# スラッシュコマンド: /spam
+# ✅ /spam コマンド：判定結果を表示してボタンに渡す
 # ==============================
 @tree.command(name="spam", description="宣伝メッセージを送信します（ボタンを押して実行）")
 @app_commands.describe(everyone="@everyone をつけるか選択（未指定の場合自動判定）")
@@ -200,19 +213,26 @@ class SpamAllView(ui.View):
 async def cmd_spam(interaction, everyone: str = "auto"):
     channel = interaction.channel
     guild = interaction.guild
+
     if everyone == "yes":
         mention = True
-        mention_reason = "手動で指定（あり）"
+        mention_reason = "✅ 手動指定: @everyone つける"
     elif everyone == "no":
         mention = False
-        mention_reason = "手動で指定（なし）"
+        mention_reason = "❌ 手動指定: @everyone つけない"
     else:
-        mention = await can_mention_everyone(channel, guild)
-        mention_reason = f"自動判定（{'権限あり→つける' if mention else '権限なし→つけない'}）"
-    print(f"[/spam] 実行: guild_id={getattr(guild, 'id', None)}, mention={mention} ({mention_reason})")
+        # ✅ 自動判定
+        mention = await can_mention_everyone(interaction)
+        mention_reason = f"{'✅ 自動判定: 権限あり→つける' if mention else '❌ 自動判定: 権限なし→つけない'}"
+
+    print(f"[/spam実行] guild_id={getattr(guild, 'id', None)} | {mention_reason}")
+
+    # ✅ 判定結果をボタンに渡して保存
     view = SpamView(mention=mention, mention_reason=mention_reason)
+
+    # ✅ ボタン＋判定結果は「自分だけに表示」
     await interaction.response.send_message(
-        "🤓 **ボタンを押してスパム開始**",
+        f"🤓 **ボタンを押してスパム開始！**\n📋 設定: {mention_reason}",
         view=view,
         ephemeral=True
     )
@@ -232,30 +252,42 @@ async def cmd_spamall(interaction):
 # ==============================
 # スラッシュコマンド: /setcount
 # ==============================
-@tree.command(name="setcount", description="宣伝の送信回数を変更（デフォルト: 6）")
-@app_commands.describe(count="送信回数（⚠️ 20回以上は制限注意）")
+@tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
+@app_commands.describe(count="送信回数（⚠️ 20回以上はDiscordの制限に注意）")
 async def cmd_setcount(interaction, count: int):
     global send_count
     if count < 1:
-        await interaction.response.send_message("# ❌ **送信回数は1以上で指定してください。**", ephemeral=True)
+        await interaction.response.send_message(
+            "# ❌ **送信回数は1以上で指定してください。**",
+            ephemeral=True
+        )
         return
     send_count = count
     warning = "\n## ⚠️ **20回以上はDiscordのレート制限を受ける可能性があります。**" if count >= 20 else ""
-    await interaction.response.send_message(f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}", ephemeral=True)
+    await interaction.response.send_message(
+        f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}",
+        ephemeral=True
+    )
 
 # ==============================
 # スラッシュコマンド: /setinterval
 # ==============================
-@tree.command(name="setinterval", description="宣伝の送信間隔を変更（デフォルト: 0.5秒）")
+@tree.command(name="setinterval", description="宣伝の送信間隔を変更します（デフォルト: 0.5秒）")
 @app_commands.describe(interval="送信間隔（秒）（⚠️ 0.3秒以下は制限注意）")
 async def cmd_setinterval(interaction, interval: float):
     global SEND_INTERVAL
     if interval <= 0:
-        await interaction.response.send_message("# ❌ **送信間隔は0より大きい値で指定してください。**", ephemeral=True)
+        await interaction.response.send_message(
+            "# ❌ **送信間隔は0より大きい値で指定してください。**",
+            ephemeral=True
+        )
         return
     SEND_INTERVAL = interval
     warning = "\n## ⚠️ **0.3秒以下はDiscordのレート制限を受ける可能性があります。**" if interval <= 0.3 else ""
-    await interaction.response.send_message(f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**{warning}", ephemeral=True)
+    await interaction.response.send_message(
+        f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**{warning}",
+        ephemeral=True
+    )
 
 # ==============================
 # プレフィックスコマンド: !setinterval
@@ -304,7 +336,7 @@ async def on_guild_join(guild):
     if granted:
         print(f"[{guild.name}] 認証ロール付与完了: {granted}")
 
-@tree.command(name="getverified", description="認証ロールをBotに自動付与")
+@tree.command(name="getverified", description="認証ロールをBotに自動付与します")
 async def cmd_getverified(interaction):
     guild = interaction.guild
     await interaction.response.defer(ephemeral=True)
