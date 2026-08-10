@@ -1,16 +1,19 @@
+# ✅ 絶対に一番最初に書く！
+from PIL import Image, ImageDraw, ImageFont
+import os
+
 import discord
 from discord import ui, app_commands
 from discord.ext import commands
 import asyncio
-import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import traceback
+
+# ... これより下はそのまま ...
 # ==============================================
 # ✅ 最終版：フォントをインストールしてから作成
 # ==============================================
-from PIL import Image, ImageDraw, ImageFont
-import os
 
 def generate_gif():
     print("[GIF自動生成] 🚀 === 開始 ===")
