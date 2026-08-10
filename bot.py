@@ -7,7 +7,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import traceback
 # ==============================================
-# ✅ Bot起動時に自動的にGIFを生成
+# ✅ Bot起動時に自動的にGIFを生成（エラー回避版）
 # ==============================================
 from PIL import Image, ImageDraw, ImageFont
 import os
@@ -26,32 +26,58 @@ def generate_gif():
     FRAME_DURATION = 100
 
     # フォントを探す
-    def get_font(size):
-        font_paths = [
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.otf",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-            "/tmp/NotoSansCJK-Bold.otf",
-        ]
-        for path in font_paths:
-            if os.path.exists(path):
+    font = None
+    font_size = 110
+    font_paths = [
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+        "/tmp/NotoSansCJK-Bold.otf",
+    ]
+    for path in font_paths:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, size=font_size)
                 print(f"[GIF自動生成] ✅ フォント: {path}")
-                return ImageFont.truetype(path, size=size)
-        print("[GIF自動生成] ⚠️ フォントなし → 代替フォント")
-        return ImageFont.load_default()
+                break
+            except Exception as e:
+                print(f"[GIF自動生成] ⚠️ フォント読み込み失敗: {e}")
 
-    font = get_font(110)
+    # ✅ フォントが無い場合 → サイズ固定・座標直接指定で回避
+    if font is None:
+        print("[GIF自動生成] ⚠️ フォントなし → 代替方式で作成")
+        font_size = 80  # 小さめに固定
+        # 文字サイズを固定値で仮定（textbboxを使わない）
+        text_w = 600
+        text_h = 120
+        x = (WIDTH - text_w) / 2
+        y = (HEIGHT - text_h) / 2
+        USE_FIXED_POS = True
+    else:
+        USE_FIXED_POS = False
+
     frames = []
 
     for bg, fg in zip(COLORS, TEXT_COLORS):
         img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
         draw = ImageDraw.Draw(img)
-        bbox = draw.textbbox((0, 0), TEXT, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        x = (WIDTH - text_w) / 2 - bbox[0]
-        y = (HEIGHT - text_h) / 2 - bbox[1]
+
+        if USE_FIXED_POS:
+            # ✅ 固定座標（エラー回避）
+            x = 100
+            y = 220
+        else:
+            # 通常計算
+            bbox = draw.textbbox((0, 0), TEXT, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            x = (WIDTH - text_w) / 2 - bbox[0]
+            y = (HEIGHT - text_h) / 2 - bbox[1]
+
+        # 影
         draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
+        # 本文
         draw.text((x, y), TEXT, font=font, fill=fg)
+
         frames.append(img)
 
     # GIF保存
@@ -71,13 +97,15 @@ def generate_gif():
             print(f"[GIF自動生成] ✅ ファイルサイズ: {os.path.getsize(out_path)} bytes")
         return True
     except Exception as e:
-        print(f"[GIF自動生成] ❌ エラー: {type(e).__name__}: {e}")
+        print(f"[GIF自動生成] ❌ 保存エラー: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # ✅ 起動時に実行
 generate_gif()
 # ==============================================
-# ここから下は元のbot.pyの内容
+# ここまで
 # ==============================================
 # ==============================
 # 設定
