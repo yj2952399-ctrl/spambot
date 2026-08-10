@@ -15,7 +15,7 @@ import os
 def generate_gif():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     out_path = os.path.join(BASE_DIR, "toykami.gif")
-    
+
     print(f"[GIF自動生成] 📁 作業場所: {BASE_DIR}")
     print(f"[GIF自動生成] 📁 出力先: {out_path}")
 
@@ -25,29 +25,61 @@ def generate_gif():
     TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
     FRAME_DURATION = 100
 
-    # ✅ Railwayにインストールされるフォントを直接指定
-    # ✅ 実際にインストールされるフォントの場所を全部試す
-FONT_PATHS = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
-    "/usr/share/fonts/NotoSansCJK-Bold.otf",
-]
+    # ✅ フォントの候補を全部試す
+    FONT_PATHS = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+    ]
 
-font = None
-for path in FONT_PATHS:
-    if os.path.exists(path):
-        try:
-            font = ImageFont.truetype(path, 110)
-            print(f"[GIF自動生成] ✅ フォント発見: {path}")
-            break
-        except Exception as e:
-            print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {e}")
+    font = None
+    for path in FONT_PATHS:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, 110)
+                print(f"[GIF自動生成] ✅ フォント発見: {path}")
+                break
+            except Exception as e:
+                print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {e}")
 
-if font is None:
-    print("[GIF自動生成] ❌ フォントが見つかりません。")
-    return False
-    print(f"[GIF自動生成] ✅ フォント読み込み成功！")
+    # ❌ フォントが見つからない場合
+    if font is None:
+        print("[GIF自動生成] ❌ フォントが見つかりません。Dockerfileでのデプロイを推奨")
+        return False  # ✅ 関数の中に正しく入っている
+
+    # ✅ GIF作成
+    frames = []
+    for bg, fg in zip(COLORS, TEXT_COLORS):
+        img = Image.new("RGB", (WIDTH, HEIGHT), color=bg)
+        draw = ImageDraw.Draw(img)
+        bbox = draw.textbbox((0, 0), TEXT, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        x = (WIDTH - text_w) / 2 - bbox[0]
+        y = (HEIGHT - text_h) / 2 - bbox[1]
+        draw.text((x + 4, y + 4), TEXT, font=font, fill=(0, 0, 0, 80))
+        draw.text((x, y), TEXT, font=font, fill=fg)
+        frames.append(img)
+
+    # ✅ GIF保存
+    try:
+        frames[0].save(
+            out_path,
+            save_all=True,
+            append_images=frames[1:],
+            loop=0,
+            duration=FRAME_DURATION,
+            optimize=False,
+            disposal=2,
+        )
+        print(f"[GIF自動生成] ✅ 成功！→ {out_path}")
+        return True
+    except Exception as e:
+        print(f"[GIF自動生成] ❌ 保存エラー: {type(e).__name__}: {e}")
+        return False
+
+# ✅ 起動時に実行（関数の外には何も書かない！）
+generate_gif()
 
     frames = []
     for bg, fg in zip(COLORS, TEXT_COLORS):
