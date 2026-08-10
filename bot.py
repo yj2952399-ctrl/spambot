@@ -33,15 +33,11 @@ def generate_gif():
         COLORS = [(220, 30, 30), (30, 60, 200), (255, 255, 255)]
         TEXT_COLORS = [(255, 255, 255), (255, 255, 255), (0, 0, 0)]
         FRAME_DURATION = 100
-
         FONT_PATHS = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/NotoSansCJK-Bold.otf",
-        "/usr/share/fonts/NotoSansCJK-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",  # ✅ これが正解！
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
         ]
 
         font = None
