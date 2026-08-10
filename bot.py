@@ -26,14 +26,27 @@ def generate_gif():
     FRAME_DURATION = 100
 
     # ✅ Railwayにインストールされるフォントを直接指定
-    FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf"
-    
-    if not os.path.exists(FONT_PATH):
-        print(f"[GIF自動生成] ❌ フォントが見つからない: {FONT_PATH}")
-        print("[GIF自動生成] 💡 apt-packages に fonts-noto-cjk を追加して再デプロイしてください")
-        return False
+    # ✅ 実際にインストールされるフォントの場所を全部試す
+FONT_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttf",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.otf",
+    "/usr/share/fonts/NotoSansCJK-Bold.otf",
+]
 
-    font = ImageFont.truetype(FONT_PATH, 110)
+font = None
+for path in FONT_PATHS:
+    if os.path.exists(path):
+        try:
+            font = ImageFont.truetype(path, 110)
+            print(f"[GIF自動生成] ✅ フォント発見: {path}")
+            break
+        except Exception as e:
+            print(f"[GIF自動生成] ⚠️ {path} 読み込み失敗: {e}")
+
+if font is None:
+    print("[GIF自動生成] ❌ フォントが見つかりません。")
+    return False
     print(f"[GIF自動生成] ✅ フォント読み込み成功！")
 
     frames = []
