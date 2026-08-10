@@ -47,7 +47,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-send_count = 6
+send_count = 5
 
 # ==============================
 # ユーティリティ関数
@@ -77,23 +77,22 @@ async def get_sendable_text_channels(guild):
             continue
     return result
 
-# ✅ 【修正版】@everyone 権限判定：「実行者の権限」で判定
+# ✅ @everyone 権限判定：情報なし＝権限ありと判断
 async def can_mention_everyone(interaction):
     channel = interaction.channel
     guild = interaction.guild
     if not guild or not channel:
-        print("[権限判定] ギルド/チャンネル情報なし → @everyoneなし")
-        return False
+        print("[権限判定] ギルド/チャンネル情報なし → @everyone つける")
+        return True
     try:
-        # ✅ Botの権限ではなく「コマンドを打った人の権限」で判定
         member = interaction.user
         perms = channel.permissions_for(member)
         result = perms.mention_everyone
         print(f"[権限判定] {member.name} の権限: mention_everyone={result}")
         return result
     except Exception as e:
-        print(f"[権限判定エラー] {type(e).__name__}: {e}")
-        return False
+        print(f"[権限判定エラー] {type(e).__name__}: {e} → @everyone つける")
+        return True
 
 def build_advertisement_text(guild):
     ad_lines = [
@@ -105,13 +104,18 @@ def build_advertisement_text(guild):
         ad_lines.append(f"# **👥 現在のメンバー数: {guild.member_count}人**")
     return "\n".join(ad_lines)
 
+# ✅ GIFファイル添付（完全復元）
 def get_gif_attachment():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    gif_path = os.path.join(base_dir, "discord_advertise_bot", "toykami.gif")
-    if not os.path.exists(gif_path):
-        gif_path = os.path.join(base_dir, "toykami.gif")
-    if os.path.exists(gif_path):
-        return discord.File(gif_path, filename="toykami.gif")
+    gif_candidates = [
+        os.path.join(base_dir, "toykami.gif"),
+        os.path.join(base_dir, "discord_advertise_bot", "toykami.gif"),
+    ]
+    for path in gif_candidates:
+        if os.path.exists(path):
+            print(f"[GIF] 発見: {path}")
+            return discord.File(path, filename="toykami.gif")
+    print("[GIF] ファイルが見つかりませんでした → 画像なしで送信")
     return None
 
 # ==============================
@@ -132,26 +136,29 @@ async def send_advertisement_followup(followup_obj, count, mention, guild):
                     file=gif_file,
                     allowed_mentions=allowed_mentions
                 )
+                print(f"[送信処理] {i+1}/{count} ✅ GIF添付 完了")
             else:
                 await followup_obj.send(
                     content=f"{prefix}{ad_text}",
                     allowed_mentions=allowed_mentions
                 )
-            print(f"[送信処理] 送信完了 {i+1}/{count} | @everyone={'✅ あり' if mention else '❌ なし'}")
+                print(f"[送信処理] {i+1}/{count} ✅ テキストのみ 完了")
         except Exception as e:
-            print(f"[送信処理] 送信エラー ({i+1}回目): {type(e).__name__}: {e}")
+            print(f"[送信処理] エラー ({i+1}回目): {type(e).__name__}: {e}")
+            if "40094" in str(e):
+                print("[注意] Discord仕様: followupは最大5回まで")
             traceback.print_exc()
         if i < count - 1:
             await asyncio.sleep(SEND_INTERVAL)
     print("[送信処理] 全メッセージ送信完了")
 
 # ==============================
-# ✅ 宣伝開始ボタンView：判定結果を保存して使う
+# 宣伝開始ボタンView
 # ==============================
 class SpamView(ui.View):
     def __init__(self, mention: bool, mention_reason: str):
         super().__init__(timeout=None)
-        self.target_mention = mention   # ✅ コマンド時の判定結果を保存
+        self.target_mention = mention
         self.mention_reason = mention_reason
 
     @ui.button(
@@ -162,21 +169,17 @@ class SpamView(ui.View):
     async def start_handler(self, interaction, btn):
         global send_count
         guild = interaction.guild
-
-        print(f"[ボタン押下] 保存された設定: @everyone={self.target_mention} ({self.mention_reason})")
-
+        print(f"[ボタン押下] 設定: @everyone={self.target_mention} ({self.mention_reason})")
         try:
             await interaction.response.defer(ephemeral=False)
         except Exception as e:
             print(f"[ボタン処理] defer失敗: {type(e).__name__}: {e}")
             return
-
-        # ✅ 「コマンド時に判定した結果」をそのまま使う → 再判定しない！
         asyncio.create_task(
             send_advertisement_followup(
                 interaction.followup,
                 send_count,
-                self.target_mention,  # ここが超重要
+                self.target_mention,
                 guild
             )
         )
@@ -202,7 +205,7 @@ class SpamAllView(ui.View):
         )
 
 # ==============================
-# ✅ /spam コマンド：判定結果を表示してボタンに渡す
+# /spam コマンド
 # ==============================
 @tree.command(name="spam", description="宣伝メッセージを送信します（ボタンを押して実行）")
 @app_commands.describe(everyone="@everyone をつけるか選択（未指定の場合自動判定）")
@@ -221,16 +224,11 @@ async def cmd_spam(interaction, everyone: str = "auto"):
         mention = False
         mention_reason = "❌ 手動指定: @everyone つけない"
     else:
-        # ✅ 自動判定
         mention = await can_mention_everyone(interaction)
-        mention_reason = f"{'✅ 自動判定: 権限あり→つける' if mention else '❌ 自動判定: 権限なし→つけない'}"
+        mention_reason = f"✅ 自動判定: 権限あり→つける" if mention else "❌ 自動判定: 権限なし→つけない"
 
-    print(f"[/spam実行] guild_id={getattr(guild, 'id', None)} | {mention_reason}")
-
-    # ✅ 判定結果をボタンに渡して保存
+    print(f"[/spam実行] guild_id={getattr(guild, 'id', 'None')} | {mention_reason}")
     view = SpamView(mention=mention, mention_reason=mention_reason)
-
-    # ✅ ボタン＋判定結果は「自分だけに表示」
     await interaction.response.send_message(
         f"🤓 **ボタンを押してスパム開始！**\n📋 設定: {mention_reason}",
         view=view,
@@ -238,7 +236,7 @@ async def cmd_spam(interaction, everyone: str = "auto"):
     )
 
 # ==============================
-# スラッシュコマンド: /spamall
+# /spamall コマンド
 # ==============================
 @tree.command(name="spamall", description="全チャンネル一括送信（サーバー追加版Botのみ）")
 async def cmd_spamall(interaction):
@@ -250,10 +248,10 @@ async def cmd_spamall(interaction):
     )
 
 # ==============================
-# スラッシュコマンド: /setcount
+# /setcount コマンド
 # ==============================
-@tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 6）")
-@app_commands.describe(count="送信回数（⚠️ 20回以上はDiscordの制限に注意）")
+@tree.command(name="setcount", description="宣伝の送信回数を変更します（デフォルト: 5）")
+@app_commands.describe(count="送信回数（⚠️ 5回推奨）")
 async def cmd_setcount(interaction, count: int):
     global send_count
     if count < 1:
@@ -263,17 +261,17 @@ async def cmd_setcount(interaction, count: int):
         )
         return
     send_count = count
-    warning = "\n## ⚠️ **20回以上はDiscordのレート制限を受ける可能性があります。**" if count >= 20 else ""
+    warning = "\n## ⚠️ **Discord仕様上、followupは5回まで送信可能です。**" if count > 5 else ""
     await interaction.response.send_message(
         f"# ✅ **送信回数を {send_count}回 に変更しました。**{warning}",
         ephemeral=True
     )
 
 # ==============================
-# スラッシュコマンド: /setinterval
+# /setinterval コマンド
 # ==============================
 @tree.command(name="setinterval", description="宣伝の送信間隔を変更します（デフォルト: 0.5秒）")
-@app_commands.describe(interval="送信間隔（秒）（⚠️ 0.3秒以下は制限注意）")
+@app_commands.describe(interval="送信間隔（秒）")
 async def cmd_setinterval(interaction, interval: float):
     global SEND_INTERVAL
     if interval <= 0:
@@ -283,14 +281,13 @@ async def cmd_setinterval(interaction, interval: float):
         )
         return
     SEND_INTERVAL = interval
-    warning = "\n## ⚠️ **0.3秒以下はDiscordのレート制限を受ける可能性があります。**" if interval <= 0.3 else ""
     await interaction.response.send_message(
-        f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**{warning}",
+        f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**",
         ephemeral=True
     )
 
 # ==============================
-# プレフィックスコマンド: !setinterval
+# !setinterval プレフィックスコマンド
 # ==============================
 @bot.command(name="setinterval")
 async def prefix_setinterval(ctx, interval: float = 0.5):
@@ -299,8 +296,7 @@ async def prefix_setinterval(ctx, interval: float = 0.5):
         await ctx.send("# ❌ **送信間隔は0より大きい値で指定してください。**")
         return
     SEND_INTERVAL = interval
-    warning = "\n## ⚠️ **0.3秒以下はDiscordのレート制限を受ける可能性があります。**" if interval <= 0.3 else ""
-    await ctx.send(f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**{warning}")
+    await ctx.send(f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**")
 
 # ==============================
 # 認証ロール自動付与関連
