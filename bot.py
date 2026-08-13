@@ -101,7 +101,7 @@ if not BOT_TOKEN:
 
 DEFAULT_SERVER_NAME = "TISN | トイ神"
 DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww"
-DEFAULT_INVITE_LINK = "https://discord.gg/BdB6PjNNT"
+DEFAULT_INVITE_LINK = "https://discord.gg/XmFW6hh5P"
 
 SEND_INTERVAL = 0.5
 
