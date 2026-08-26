@@ -100,8 +100,8 @@ if not BOT_TOKEN:
     print("WARNING: BOT_TOKEN が環境変数に設定されていません。起動時に環境変数を確認してください。")
 
 DEFAULT_SERVER_NAME = "TISN | トイ神"
-DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww"
-DEFAULT_INVITE_LINK = "https://discord.gg/XmFW6hh5P"
+DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww陰キャぼっち生活楽しんでる？😂友達できるといいねwwあ、自hey!showだから無理かww😅"
+DEFAULT_INVITE_LINK = "https://discord.gg/yMjkgmg7tS"
 
 SEND_INTERVAL = 0.5
 
