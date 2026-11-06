@@ -243,7 +243,20 @@ async def _resolve_member(guild, user):
     except Exception:
         return None
 
-# ✅ @everyone：True=可 / False=不可 / None=判定不能
+# ✅ @everyone：Discord計算済み権限(payload) → owner/admin → チャンネル → ギルド の順で見る
+#    判定不能は「つける」に倒す（付けすぎても実害が無いため）
+def _perm_true(perms) -> Optional[bool]:
+    """payloadの権限ビット。未提供(0)は不明"""
+    if perms is None:
+        return None
+    try:
+        if perms.value == 0:
+            return None
+        return bool(perms.administrator or perms.mention_everyone)
+    except Exception:
+        return None
+
+
 def _mention_verdict(channel, subject) -> Optional[bool]:
     if channel is None or subject is None:
         return None
@@ -259,21 +272,35 @@ def _mention_verdict(channel, subject) -> Optional[bool]:
         return None
     return bool(p.administrator or p.mention_everyone)
 
-def judge_mention_for(channel, subject) -> Optional[bool]:
-    """スレッドは親チャンネルも見る"""
-    if channel is None or subject is None:
+
+def _guild_verdict(guild, subject) -> Optional[bool]:
+    """チャンネル上書きを無視したギルド権限（最終フォールバック）"""
+    if guild is None or not isinstance(subject, discord.Member):
         return None
-    targets = [channel]
-    if isinstance(channel, discord.Thread):
-        parent = channel.parent
-        if parent is not None:
-            targets.append(parent)
-    results = [_mention_verdict(t, subject) for t in targets]
+    if _is_adminish(guild, subject):
+        return True
+    try:
+        p = guild.permissions_for(subject)
+    except Exception:
+        return None
+    return bool(p.administrator or p.mention_everyone)
+
+
+def judge_mention_for(channel, subject, payload=None) -> Optional[bool]:
+    """payload=Discord計算済み権限。1つでもTrueならTrue、全部FalseのときだけFalse"""
+    guild = getattr(channel, "guild", None)
+    results: list[Optional[bool]] = [_perm_true(payload)]
+    if channel is not None and subject is not None:
+        results.append(_mention_verdict(channel, subject))
+        if isinstance(channel, discord.Thread) and channel.parent is not None:
+            results.append(_mention_verdict(channel.parent, subject))
+        results.append(_guild_verdict(guild, subject))
     if any(r is True for r in results):
         return True
     if all(r is False for r in results):
         return False
     return None
+
 
 def decide_mention(user_ok: Optional[bool], bot_ok: Optional[bool]) -> bool:
     """実行者かBotのどちらかが撃てればOK。不明は「つける」に倒す"""
@@ -284,6 +311,7 @@ def decide_mention(user_ok: Optional[bool], bot_ok: Optional[bool]) -> bool:
     if bot_ok is False:
         return False
     return True
+
 
 async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if mode == "on":
@@ -299,17 +327,24 @@ async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if channel is None:
         return True, "✅ チャンネル不明→つける"
 
+    # ✅ 実行者は payload の権限を最優先（キャッシュ非依存・Discord計算値）
     user = await _resolve_member(guild, interaction.user)
-    user_ok = judge_mention_for(channel, user) if user is not None else None
+    user_ok = judge_mention_for(channel, user, getattr(interaction, "permissions", None))
 
     me = await get_bot_member(guild)
-    bot_ok = judge_mention_for(channel, me) if me is not None else None
+    bot_ok = judge_mention_for(channel, me, getattr(interaction, "app_permissions", None))
+
+    print(
+        f"[権限判定] ch={getattr(channel, 'id', None)} user={getattr(user, 'id', None)} "
+        f"user_ok={user_ok} bot_ok={bot_ok} "
+        f"payload={getattr(getattr(interaction, 'permissions', None), 'value', None)}"
+    )
 
     ok = decide_mention(user_ok, bot_ok)
     if not ok:
         if user_ok is False:
-            return False, "❌ 自動判定: 実行者・Botとも権限なし"
-        return False, "❌ 自動判定: Botに権限なし"
+            return False, "❌ 自動判定: 実行者・Botとも権限なし（/seteveryone つける で強制可）"
+        return False, "❌ 自動判定: Botに権限なし（/seteveryone つける で強制可）"
     if user_ok is True and bot_ok is False:
         return True, "⚠️ 実行者OK / Bot権限なし（pingは飛ばないかも）"
     if user_ok is True:
@@ -492,6 +527,9 @@ class SpamAllView(ui.View):
         results: list[tuple[str, str]] = []
         sem = asyncio.Semaphore(ALL_CONCURRENCY)
         stop = asyncio.Event()
+        origin_id = getattr(interaction, "channel_id", None)
+        user_payload = getattr(interaction, "permissions", None)
+        app_payload = getattr(interaction, "app_permissions", None)
 
         async def ticker():
             while not stop.is_set():
@@ -511,8 +549,11 @@ class SpamAllView(ui.View):
             if not caps["send"]:
                 results.append((ch.name, "skip"))
                 return
+            # payloadは実行チャンネル分しか正しくないので、そこだけ渡す
+            same = getattr(ch, "id", None) == origin_id
             ch_mention = decide_mention(
-                judge_mention_for(ch, user), judge_mention_for(ch, me)
+                judge_mention_for(ch, user, user_payload if same else None),
+                judge_mention_for(ch, me, app_payload if same else None),
             )
             state = {"native": True, "attach": caps["attach"], "said": set(), "allow_followup": False}
             ok, fail = await run_spam(
@@ -642,6 +683,45 @@ async def cmd_seteveryone(interaction: discord.Interaction, mode: str):
     await interaction.response.send_message(
         f"# ✅ **@everyone の設定を「{label}」に変更しました。**", ephemeral=True
     )
+
+# ==============================
+# /permcheck（デバッグ）
+# ==============================
+@tree.command(name="permcheck", description="権限判定の生データを表示します（デバッグ用）")
+async def cmd_permcheck(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("DMです（判定は常に「つける」）", ephemeral=True)
+        return
+
+    ch = await _resolve_mention_channel(interaction)
+    user = await _resolve_member(guild, interaction.user)
+    me = await get_bot_member(guild)
+
+    def fmt(label, fn):
+        try:
+            return f"{label}: {fn()}"
+        except Exception as e:
+            return f"{label}: ERR {type(e).__name__}: {e}"
+
+    lines = [
+        f"channel: {ch} ({type(ch).__name__}) id={getattr(ch, 'id', None)}",
+        f"user: {user} ({type(user).__name__})",
+        f"bot: {me} ({type(me).__name__})",
+        f"owner一致: {guild.owner_id == getattr(user, 'id', None)}",
+        fmt("payload(user)", lambda: interaction.permissions.value),
+        fmt("payload(app)", lambda: interaction.app_permissions.value),
+        fmt("payload(user).mention_everyone", lambda: interaction.permissions.mention_everyone),
+        fmt("user.guild_permissions", lambda: user.guild_permissions.value),
+        fmt("ch.perms_for(user).mention_everyone", lambda: ch.permissions_for(user).mention_everyone),
+        fmt("ch.perms_for(bot).mention_everyone", lambda: ch.permissions_for(me).mention_everyone),
+        fmt("guild.perms_for(user).mention_everyone", lambda: guild.permissions_for(user).mention_everyone),
+    ]
+    user_ok = judge_mention_for(ch, user, getattr(interaction, "permissions", None))
+    bot_ok = judge_mention_for(ch, me, getattr(interaction, "app_permissions", None))
+    lines.append(f"最終: user_ok={user_ok} / bot_ok={bot_ok} / 判定={decide_mention(user_ok, bot_ok)}")
+    await interaction.followup.send("```\n" + "\n".join(lines) + "\n```", ephemeral=True)
 
 # ==============================
 # 認証ロール自動付与
