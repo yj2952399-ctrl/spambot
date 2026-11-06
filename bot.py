@@ -100,8 +100,10 @@ DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮�
 DEFAULT_INVITE_LINK = "https://discord.gg/yMjkgmg7tS"
 
 SEND_INTERVAL = 0.0
-MAX_CONCURRENCY = 3
+MAX_CONCURRENCY = 3        # 1チャンネルあたりの同時送信数
+ALL_CONCURRENCY = 5        # /spamall 全体の同時送信数
 FOLLOWUP_LIMIT = 5
+SPAMALL_REPORT_INTERVAL = 2.5
 
 DEFAULT_SEND_COUNT = 5
 _send_count: dict[int, int] = {}
@@ -162,12 +164,25 @@ async def get_bot_member(guild):
             return None
     return None
 
+def _is_adminish(guild, subject) -> bool:
+    """所有者・管理者はチャンネル上書きを無視できる"""
+    if guild is None or subject is None:
+        return False
+    sid = getattr(subject, "id", None)
+    if sid is not None and guild.owner_id == sid:
+        return True
+    gp = getattr(subject, "guild_permissions", None)
+    return bool(gp and gp.administrator)
+
 def channel_caps(channel, me, user=None) -> dict:
     caps = {"send": False, "attach": False}
     subject = me
-    if subject is None:
-        subject = user if isinstance(user, discord.Member) else None
-    if subject is None:
+    if subject is None and isinstance(user, discord.Member):
+        subject = user
+    if subject is None or channel is None:
+        return {"send": True, "attach": True}
+    guild = getattr(channel, "guild", None)
+    if _is_adminish(guild, subject):
         return {"send": True, "attach": True}
     try:
         p = channel.permissions_for(subject)
@@ -178,19 +193,98 @@ def channel_caps(channel, me, user=None) -> dict:
     return caps
 
 async def get_sendable_text_channels(guild, me, user=None):
+    """Botが実際に「見る＋送る」できるテキストチャンネルだけ返す"""
     if guild is None:
+        return []
+    subject = me
+    if subject is None and isinstance(user, discord.Member):
+        subject = user
+    if subject is None:
         return []
     out = []
     for ch in guild.text_channels:
         try:
-            subject = me or (user if isinstance(user, discord.Member) else None)
-            if subject and ch.permissions_for(subject).view_channel:
-                out.append(ch)
+            p = ch.permissions_for(subject)
         except Exception:
             continue
+        if _is_adminish(guild, subject) or (p.view_channel and p.send_messages):
+            out.append(ch)
     return out
 
-# ✅ @everyone：ユーザーとBotの権限をORで見る。不明なら「つける」
+async def _resolve_mention_channel(interaction):
+    """interaction.channel が PartialMessageable 等ならIDから引き直す"""
+    ch = interaction.channel
+    if ch is not None and hasattr(ch, "permissions_for"):
+        return ch
+    guild = interaction.guild
+    cid = getattr(interaction, "channel_id", None)
+    if guild is None or cid is None:
+        return None
+    ch = guild.get_channel(cid) or guild.get_thread(cid)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(cid)
+        except Exception:
+            return None
+    return ch
+
+async def _resolve_member(guild, user):
+    """interaction.user が Member でない（User/MISSING）場合に引き直す"""
+    if isinstance(user, discord.Member):
+        return user
+    uid = getattr(user, "id", None)
+    if guild is None or uid is None:
+        return None
+    m = guild.get_member(uid)
+    if m is not None:
+        return m
+    try:
+        return await guild.fetch_member(uid)
+    except Exception:
+        return None
+
+# ✅ @everyone：True=可 / False=不可 / None=判定不能
+def _mention_verdict(channel, subject) -> Optional[bool]:
+    if channel is None or subject is None:
+        return None
+    guild = getattr(channel, "guild", None)
+    if guild is None:
+        return None
+    if _is_adminish(guild, subject):
+        return True
+    try:
+        p = channel.permissions_for(subject)
+    except Exception as e:
+        print(f"[権限判定] 計算失敗: {type(e).__name__}: {e}")
+        return None
+    return bool(p.administrator or p.mention_everyone)
+
+def judge_mention_for(channel, subject) -> Optional[bool]:
+    """スレッドは親チャンネルも見る"""
+    if channel is None or subject is None:
+        return None
+    targets = [channel]
+    if isinstance(channel, discord.Thread):
+        parent = channel.parent
+        if parent is not None:
+            targets.append(parent)
+    results = [_mention_verdict(t, subject) for t in targets]
+    if any(r is True for r in results):
+        return True
+    if all(r is False for r in results):
+        return False
+    return None
+
+def decide_mention(user_ok: Optional[bool], bot_ok: Optional[bool]) -> bool:
+    """実行者かBotのどちらかが撃てればOK。不明は「つける」に倒す"""
+    if user_ok is True:
+        return True
+    if bot_ok is True:
+        return True
+    if bot_ok is False:
+        return False
+    return True
+
 async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if mode == "on":
         return True, "✅ 手動指定: つける"
@@ -198,27 +292,30 @@ async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
         return False, "❌ 手動指定: つけない"
 
     guild = interaction.guild
-    channel = interaction.channel
-    if guild is None or channel is None:
+    if guild is None:
         return True, "✅ DM判定: つける"
 
-    user = interaction.user
-    if isinstance(user, discord.Member):
-        try:
-            if channel.permissions_for(user).mention_everyone:
-                return True, "✅ 自動判定: 権限あり"
-        except Exception as e:
-            print(f"[権限判定] ユーザー分 取得失敗: {type(e).__name__}: {e}")
+    channel = await _resolve_mention_channel(interaction)
+    if channel is None:
+        return True, "✅ チャンネル不明→つける"
+
+    user = await _resolve_member(guild, interaction.user)
+    user_ok = judge_mention_for(channel, user) if user is not None else None
 
     me = await get_bot_member(guild)
-    if me is not None:
-        try:
-            if channel.permissions_for(me).mention_everyone:
-                return True, "✅ 自動判定: Botに権限あり"
-            return False, "❌ 自動判定: 権限なし"
-        except Exception as e:
-            print(f"[権限判定] Bot分 取得失敗: {type(e).__name__}: {e}")
+    bot_ok = judge_mention_for(channel, me) if me is not None else None
 
+    ok = decide_mention(user_ok, bot_ok)
+    if not ok:
+        if user_ok is False:
+            return False, "❌ 自動判定: 実行者・Botとも権限なし"
+        return False, "❌ 自動判定: Botに権限なし"
+    if user_ok is True and bot_ok is False:
+        return True, "⚠️ 実行者OK / Bot権限なし（pingは飛ばないかも）"
+    if user_ok is True:
+        return True, "✅ 自動判定: 実行者に権限あり"
+    if bot_ok is True:
+        return True, "✅ 自動判定: Botに権限あり"
     return True, "✅ 自動判定: 不明→つける"
 
 def build_advertisement_text(guild) -> str:
@@ -235,56 +332,61 @@ def build_advertisement_text(guild) -> str:
 
 # ==============================
 # ✅ 1通配信（通知は1回だけ）
+#    native=Botトークン直送 / followup=実行チャンネル限定
 # ==============================
 async def deliver(content, mention, channel, followup, state) -> bool:
     am = discord.AllowedMentions(everyone=mention, roles=False, users=False)
-    has_file = GIF_BYTES is not None
+    has_file = GIF_BYTES is not None and state.get("attach", False)
 
-    for use_native in (True, False):
-        if use_native and not state["native"]:
-            continue
-        target = channel if use_native else followup
-        if target is None:
-            continue
+    targets: list[tuple[str, object]] = []
+    if state.get("native") and channel is not None:
+        targets.append(("native", channel))
+    if followup is not None and state.get("allow_followup", True):
+        targets.append(("followup", followup))
 
-        if has_file and state["attach"]:
+    for kind, target in targets:
+        if has_file:
             f = make_gif_file()
             if f is not None:
                 try:
                     await target.send(content=content, file=f, allowed_mentions=am)
                     return True
                 except discord.Forbidden:
-                    note(state, f"file403:{use_native}", "[送信] ⚠️ 添付が拒否された → テキストで再試行")
+                    note(state, f"file403:{kind}", "[送信] ⚠️ 添付が拒否された → テキストで再試行")
                 except discord.HTTPException as e:
-                    note(state, f"filehttp:{use_native}", f"[送信] ⚠️ 添付HTTP {getattr(e, 'status', '?')}")
+                    note(state, f"filehttp:{kind}", f"[送信] ⚠️ 添付HTTP {getattr(e, 'status', '?')}")
+                    if getattr(e, "status", None) == 429:
+                        await asyncio.sleep(min(getattr(e, "retry_after", 1.0) or 1.0, 5.0))
                 except Exception as e:
-                    note(state, f"fileex:{use_native}", f"[送信] ⚠️ 添付例外 {type(e).__name__}: {e}")
+                    note(state, f"fileex:{kind}", f"[送信] ⚠️ 添付例外 {type(e).__name__}: {e}")
 
         try:
             await target.send(content=content, allowed_mentions=am)
             return True
         except discord.Forbidden:
-            if use_native:
+            if kind == "native":
                 state["native"] = False
-                note(state, "no-native", "[送信] ⚠️ チャンネル直送は不可 → followupに固定（添付は維持）")
+                note(state, "no-native", "[送信] ⚠️ チャンネル直送は不可")
             else:
                 note(state, "no-followup", "[送信] ❌ followupも拒否")
         except discord.HTTPException as e:
-            note(state, f"http:{use_native}", f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}: {e}")
+            note(state, f"http:{kind}", f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}: {e}")
+            if getattr(e, "status", None) == 429:
+                await asyncio.sleep(min(getattr(e, "retry_after", 1.0) or 1.0, 5.0))
         except Exception as e:
-            note(state, f"ex:{use_native}", f"[送信] ⚠️ {type(e).__name__}: {e}")
+            note(state, f"ex:{kind}", f"[送信] ⚠️ {type(e).__name__}: {e}")
 
     return False
 
 # ==============================
 # ✅ バースト送信
 # ==============================
-async def run_spam(channel, followup, guild, count, mention, state):
+async def run_spam(channel, followup, guild, count, mention, state, sem=None, progress=None):
     body = build_advertisement_text(guild)
     if mention:
         body = f"@everyone\n{body}"
 
-    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    local_sem = sem or asyncio.Semaphore(MAX_CONCURRENCY)
     ok = 0
     fail = 0
 
@@ -292,16 +394,20 @@ async def run_spam(channel, followup, guild, count, mention, state):
         nonlocal ok, fail
         if SEND_INTERVAL > 0:
             await asyncio.sleep(SEND_INTERVAL * i)
-        async with sem:
+        async with local_sem:
             for attempt in range(3):
                 try:
                     if await deliver(body, mention, channel, followup, state):
                         ok += 1
+                        if progress is not None:
+                            progress["done"] += 1
                         return
                 except Exception as e:
                     note(state, f"task:{type(e).__name__}", f"[送信] ❌ {type(e).__name__}: {e}")
                 await asyncio.sleep(0.8 * (attempt + 1))
             fail += 1
+            if progress is not None:
+                progress["done"] += 1
             note(state, "task-fail", "[送信] ❌ 全候補失敗のメッセージあり")
 
     await asyncio.gather(*(one(i) for i in range(count)))
@@ -321,14 +427,14 @@ class SpamView(ui.View):
     @ui.button(label="開始", style=discord.ButtonStyle.danger, emoji="📢")
     async def start_handler(self, interaction: discord.Interaction, btn: ui.Button):
         guild = interaction.guild
-        channel = interaction.channel
+        channel = await _resolve_mention_channel(interaction) if guild else interaction.channel
         count = self.count
 
         # ✅ 5通以下は followup 固定（403ログを出さない）。6通以上のみ直送を試す
         me = await get_bot_member(guild) if guild else None
         caps = channel_caps(channel, me, interaction.user) if guild else {"send": True, "attach": True}
-        native = bool(me) and caps["send"] and count > FOLLOWUP_LIMIT
-        state = {"native": native, "attach": caps["attach"], "said": set()}
+        native = bool(me) and channel is not None and caps["send"] and count > FOLLOWUP_LIMIT
+        state = {"native": native, "attach": caps["attach"], "said": set(), "allow_followup": True}
 
         try:
             await interaction.response.defer(ephemeral=False)
@@ -357,10 +463,13 @@ class SpamAllView(ui.View):
     @ui.button(label="全チャンネルに送信", style=discord.ButtonStyle.danger, emoji="💥")
     async def all_handler(self, interaction: discord.Interaction, btn: ui.Button):
         guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("## ❌ **サーバー内で実行してください。**", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         me = await get_bot_member(guild)
-        user = interaction.user
         if me is None:
             await interaction.followup.send(
                 "## ❌ **Botが未導入のため全チャンネル送信は不可です。**\n/spam を使ってください。",
@@ -368,30 +477,67 @@ class SpamAllView(ui.View):
             )
             return
 
+        # ✅ 他のチャンネルは followup が使えないので、必ずBotトークンで直送する
+        user = await _resolve_member(guild, interaction.user)
         channels = await get_sendable_text_channels(guild, me, user)
         if not channels:
-            await interaction.followup.send("## ❌ **送信可能なチャンネルがありません。**", ephemeral=True)
+            await interaction.followup.send(
+                "## ❌ **送信可能なチャンネルがありません。**\n（Botに「メッセージ送信」権限が必要です）",
+                ephemeral=True,
+            )
             return
 
-        results = []
+        total = len(channels) * self.count
+        progress = {"done": 0}
+        results: list[tuple[str, str]] = []
+        sem = asyncio.Semaphore(ALL_CONCURRENCY)
+        stop = asyncio.Event()
+
+        async def ticker():
+            while not stop.is_set():
+                try:
+                    await interaction.edit_original_response(
+                        content=f"# 💥 **一括送信中…**\n送信 {progress['done']} / {total}（{len(channels)}ch）"
+                    )
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=SPAMALL_REPORT_INTERVAL)
+                except asyncio.TimeoutError:
+                    pass
 
         async def worker(ch):
             caps = channel_caps(ch, me, user)
             if not caps["send"]:
                 results.append((ch.name, "skip"))
                 return
-            state = {"native": True, "attach": caps["attach"], "said": set()}
-            ok, fail = await run_spam(ch, None, guild, self.count, self.mention, state)
+            ch_mention = decide_mention(
+                judge_mention_for(ch, user), judge_mention_for(ch, me)
+            )
+            state = {"native": True, "attach": caps["attach"], "said": set(), "allow_followup": False}
+            ok, fail = await run_spam(
+                ch, None, guild, self.count, ch_mention, state, sem=sem, progress=progress
+            )
             results.append((ch.name, f"{ok}ok/{fail}ng"))
 
-        await asyncio.gather(*(worker(c) for c in channels))
+        ticker_task = asyncio.create_task(ticker())
+        try:
+            await asyncio.gather(*(worker(c) for c in channels))
+        finally:
+            stop.set()
+            await asyncio.gather(ticker_task, return_exceptions=True)
 
+        results.sort(key=lambda x: x[0])
         done = sum(1 for _, r in results if r != "skip")
         skip = sum(1 for _, r in results if r == "skip")
-        detail = "\n".join(f"・#{n}: {r}" for n, r in results[:20])
-        await interaction.followup.send(
-            f"# 💥 **一括送信完了**\n送信={done} / スキップ={skip}\n{detail}",
-            ephemeral=True,
+        ok_sum = sum(int(r.split("ok")[0]) for _, r in results if r != "skip")
+        detail = "\n".join(f"・#{n}: {r}" for n, r in results[:30])
+        if len(results) > 30:
+            detail += f"\n…他 {len(results) - 30}ch"
+        await interaction.edit_original_response(
+            content=(
+                f"# 💥 **一括送信完了**\n送信ch={done} / スキップ={skip} / 成功={ok_sum}通\n{detail}"
+            )
         )
 
 # ==============================
@@ -434,8 +580,9 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
     mode = everyone or get_mention_mode(interaction.guild)
     mention, reason = await resolve_mention(interaction, mode)
     count = get_send_count(interaction.guild)
+    note_txt = "（チャンネルごとに再判定）" if mode == "auto" else ""
     await interaction.response.send_message(
-        f"💥 **全チャンネル送信の準備**\n📋 @everyone: {reason}\n🔢 各ch {count}回",
+        f"💥 **全チャンネル送信の準備**\n📋 @everyone: {reason}{note_txt}\n🔢 各ch {count}回",
         view=SpamAllView(mention=mention, reason=reason, count=count),
         ephemeral=True,
     )
