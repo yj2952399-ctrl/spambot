@@ -91,8 +91,7 @@ if not BOT_TOKEN:
     print("WARNING: BOT_TOKEN 未設定")
 
 DEFAULT_SERVER_NAME = "TISN | トイ神"
-DEFAULT_DESCRIPTION = "#raid by TOISHIN!!!!"
-                      "お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww陰キャぼっち生活楽しんでる？😂友達できるといいねwwあ、自hey!showだから無理かww😅"
+DEFAULT_DESCRIPTION = "#raid by TOISHIN!!!!                お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww陰キャぼっち生活楽しんでる？😂友達できるといいねwwあ、自hey!showだから無理かww😅"
 DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
 
 # ✅ 0.0 = 全弾同時発射（discord.py のレートリミッタに速度を任せる＝最速）
