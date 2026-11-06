@@ -4,6 +4,7 @@ import io
 import os
 import time
 import asyncio
+import logging
 import threading
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -13,6 +14,10 @@ from PIL import Image, ImageDraw, ImageFont
 import discord
 from discord import ui, app_commands
 from discord.ext import commands
+
+# ✅ 429のWARNINGを黙らせる（discord.py内部ロガー）
+logging.getLogger("discord.http").setLevel(logging.ERROR)
+logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 
 # ==============================================
 # ✅ GIF生成（メモリ保持）
@@ -95,7 +100,7 @@ DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮�
 DEFAULT_INVITE_LINK = "https://discord.gg/yMjkgmg7tS"
 
 SEND_INTERVAL = 0.0
-MAX_CONCURRENCY = 4
+MAX_CONCURRENCY = 3
 FOLLOWUP_LIMIT = 5
 
 DEFAULT_SEND_COUNT = 5
@@ -138,6 +143,13 @@ tree = bot.tree
 # ==============================
 # ユーティリティ
 # ==============================
+def note(state, key: str, msg: str):
+    """同じ通知は1回だけ出す"""
+    if key in state.setdefault("said", set()):
+        return
+    state["said"].add(key)
+    print(msg)
+
 async def get_bot_member(guild):
     if guild is None:
         return None
@@ -151,13 +163,11 @@ async def get_bot_member(guild):
     return None
 
 def channel_caps(channel, me, user=None) -> dict:
-    """Bot未導入なら操作ユーザーの権限で代替判定する（実効権限はユーザー側）。"""
     caps = {"send": False, "attach": False}
     subject = me
     if subject is None:
         subject = user if isinstance(user, discord.Member) else None
     if subject is None:
-        # 判定不能 → 楽観的に許可（実送信で判断）
         return {"send": True, "attach": True}
     try:
         p = channel.permissions_for(subject)
@@ -173,16 +183,14 @@ async def get_sendable_text_channels(guild, me, user=None):
     out = []
     for ch in guild.text_channels:
         try:
-            if me:
-                if ch.permissions_for(me).view_channel:
-                    out.append(ch)
-            elif isinstance(user, discord.Member):
-                if ch.permissions_for(user).view_channel:
-                    out.append(ch)
+            subject = me or (user if isinstance(user, discord.Member) else None)
+            if subject and ch.permissions_for(subject).view_channel:
+                out.append(ch)
         except Exception:
             continue
     return out
 
+# ✅ @everyone：ユーザーとBotの権限をORで見る。不明なら「つける」
 async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if mode == "on":
         return True, "✅ 手動指定: つける"
@@ -194,15 +202,22 @@ async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if guild is None or channel is None:
         return True, "✅ DM判定: つける"
 
-    me = await get_bot_member(guild)
-    subject = me or (interaction.user if isinstance(interaction.user, discord.Member) else None)
-    if subject is not None:
+    user = interaction.user
+    if isinstance(user, discord.Member):
         try:
-            ok = channel.permissions_for(subject).mention_everyone
-            who = "Bot" if me else "ユーザー"
-            return (ok, f"✅ 自動判定: {who}に権限あり" if ok else f"❌ 自動判定: {who}に権限なし")
+            if channel.permissions_for(user).mention_everyone:
+                return True, "✅ 自動判定: 権限あり"
         except Exception as e:
-            print(f"[権限判定] 取得失敗: {type(e).__name__}: {e}")
+            print(f"[権限判定] ユーザー分 取得失敗: {type(e).__name__}: {e}")
+
+    me = await get_bot_member(guild)
+    if me is not None:
+        try:
+            if channel.permissions_for(me).mention_everyone:
+                return True, "✅ 自動判定: Botに権限あり"
+            return False, "❌ 自動判定: 権限なし"
+        except Exception as e:
+            print(f"[権限判定] Bot分 取得失敗: {type(e).__name__}: {e}")
 
     return True, "✅ 自動判定: 不明→つける"
 
@@ -219,8 +234,7 @@ def build_advertisement_text(guild) -> str:
     return "\n".join(lines)
 
 # ==============================
-# ✅ 1通配信
-#   添付の403と送信経路の403を切り分ける
+# ✅ 1通配信（通知は1回だけ）
 # ==============================
 async def deliver(content, mention, channel, followup, state) -> bool:
     am = discord.AllowedMentions(everyone=mention, roles=False, users=False)
@@ -233,7 +247,6 @@ async def deliver(content, mention, channel, followup, state) -> bool:
         if target is None:
             continue
 
-        # ① 添付つきで試す
         if has_file and state["attach"]:
             f = make_gif_file()
             if f is not None:
@@ -241,30 +254,25 @@ async def deliver(content, mention, channel, followup, state) -> bool:
                     await target.send(content=content, file=f, allowed_mentions=am)
                     return True
                 except discord.Forbidden:
-                    print(f"[送信] ⚠️ 添付拒否 ({'native' if use_native else 'followup'}) → テキストで再試行")
+                    note(state, f"file403:{use_native}", "[送信] ⚠️ 添付が拒否された → テキストで再試行")
                 except discord.HTTPException as e:
-                    print(f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')} (添付)")
+                    note(state, f"filehttp:{use_native}", f"[送信] ⚠️ 添付HTTP {getattr(e, 'status', '?')}")
                 except Exception as e:
-                    print(f"[送信] ⚠️ {type(e).__name__} (添付): {e}")
+                    note(state, f"fileex:{use_native}", f"[送信] ⚠️ 添付例外 {type(e).__name__}: {e}")
 
-        # ② テキストで試す
         try:
             await target.send(content=content, allowed_mentions=am)
-            # テキストは通った → 添付だけが不可だったと確定
-            if has_file and state["attach"]:
-                state["attach"] = False
-                print("[送信] ℹ️ 添付は不可と確定 → 以降テキストのみ")
             return True
         except discord.Forbidden:
             if use_native:
                 state["native"] = False
-                print("[送信] ⚠️ チャンネル送信不可 → followupに切替（添付設定は維持）")
+                note(state, "no-native", "[送信] ⚠️ チャンネル直送は不可 → followupに固定（添付は維持）")
             else:
-                print("[送信] ❌ followupも拒否")
+                note(state, "no-followup", "[送信] ❌ followupも拒否")
         except discord.HTTPException as e:
-            print(f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}: {e}")
+            note(state, f"http:{use_native}", f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}: {e}")
         except Exception as e:
-            print(f"[送信] ⚠️ {type(e).__name__}: {e}")
+            note(state, f"ex:{use_native}", f"[送信] ⚠️ {type(e).__name__}: {e}")
 
     return False
 
@@ -285,20 +293,16 @@ async def run_spam(channel, followup, guild, count, mention, state):
         if SEND_INTERVAL > 0:
             await asyncio.sleep(SEND_INTERVAL * i)
         async with sem:
-            done = False
             for attempt in range(3):
                 try:
                     if await deliver(body, mention, channel, followup, state):
-                        done = True
-                        break
+                        ok += 1
+                        return
                 except Exception as e:
-                    print(f"[送信] ❌ {i+1}: {type(e).__name__}: {e}")
+                    note(state, f"task:{type(e).__name__}", f"[送信] ❌ {type(e).__name__}: {e}")
                 await asyncio.sleep(0.8 * (attempt + 1))
-            if done:
-                ok += 1
-            else:
-                fail += 1
-                print(f"[送信] ❌ {i+1}: 全候補失敗")
+            fail += 1
+            note(state, "task-fail", "[送信] ❌ 全候補失敗のメッセージあり")
 
     await asyncio.gather(*(one(i) for i in range(count)))
     print(f"[送信完了] 成功={ok} 失敗={fail}")
@@ -318,16 +322,13 @@ class SpamView(ui.View):
     async def start_handler(self, interaction: discord.Interaction, btn: ui.Button):
         guild = interaction.guild
         channel = interaction.channel
+        count = self.count
 
+        # ✅ 5通以下は followup 固定（403ログを出さない）。6通以上のみ直送を試す
         me = await get_bot_member(guild) if guild else None
-        if guild and me:
-            caps = channel_caps(channel, me)
-            state = {"native": caps["send"], "attach": caps["attach"]}
-        else:
-            # ✅ Bot未導入：followupで投稿。添付可否はユーザー権限で判定
-            caps = channel_caps(channel, None, interaction.user) if guild else {"send": True, "attach": True}
-            state = {"native": False, "attach": caps["attach"]}
-        print(f"[起動] native={state['native']} attach={state['attach']}")
+        caps = channel_caps(channel, me, interaction.user) if guild else {"send": True, "attach": True}
+        native = bool(me) and caps["send"] and count > FOLLOWUP_LIMIT
+        state = {"native": native, "attach": caps["attach"], "said": set()}
 
         try:
             await interaction.response.defer(ephemeral=False)
@@ -335,11 +336,11 @@ class SpamView(ui.View):
             print(f"[ボタン] defer失敗: {type(e).__name__}: {e}")
             return
 
-        count = self.count
-        if not state["native"] and count > FOLLOWUP_LIMIT:
-            print(f"[ボタン] followup上限のため {count} → {FOLLOWUP_LIMIT}")
+        if not native and count > FOLLOWUP_LIMIT:
             count = FOLLOWUP_LIMIT
+            print(f"[ボタン] followup上限のため {self.count} → {count} に制限")
 
+        print(f"[開始] 回数={count} 経路={'直送' if native else 'followup'} 添付={state['attach']}")
         try:
             await run_spam(channel, interaction.followup, guild, count, self.mention, state)
         except Exception as e:
@@ -379,7 +380,7 @@ class SpamAllView(ui.View):
             if not caps["send"]:
                 results.append((ch.name, "skip"))
                 return
-            state = {"native": True, "attach": caps["attach"]}
+            state = {"native": True, "attach": caps["attach"], "said": set()}
             ok, fail = await run_spam(ch, None, guild, self.count, self.mention, state)
             results.append((ch.name, f"{ok}ok/{fail}ng"))
 
@@ -465,9 +466,9 @@ async def cmd_setinterval(interaction: discord.Interaction, interval: float):
         await interaction.response.send_message("# ❌ **0以上で指定してください。**", ephemeral=True)
         return
     SEND_INTERVAL = interval
-    note = "（全弾同時・レートリミッタ任せ）" if interval == 0 else ""
+    note_txt = "（全弾同時・レートリミッタ任せ）" if interval == 0 else ""
     await interaction.response.send_message(
-        f"# ✅ **送信間隔を {interval}秒 に変更しました。**{note}", ephemeral=True
+        f"# ✅ **送信間隔を {interval}秒 に変更しました。**{note_txt}", ephemeral=True
     )
 
 @bot.command(name="setinterval")
