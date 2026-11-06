@@ -15,7 +15,7 @@ from discord import ui, app_commands
 from discord.ext import commands
 
 # ==============================================
-# ✅ GIF生成（ディスクではなくメモリに bytes で保持）
+# ✅ GIF生成（メモリ保持）
 # ==============================================
 def generate_gif() -> Optional[bytes]:
     print("[GIF生成] 🚀 === 開始 ===")
@@ -75,7 +75,6 @@ def generate_gif() -> Optional[bytes]:
         traceback.print_exc()
         return None
 
-# ✅ 起動時に一度だけ生成。以降はディスクI/Oゼロ
 GIF_BYTES = generate_gif()
 
 def make_gif_file():
@@ -90,18 +89,18 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", None)
 if not BOT_TOKEN:
     print("WARNING: BOT_TOKEN 未設定")
 
+RAID_HEADER = "# raid by TOISHIN!!!!!!!!"
 DEFAULT_SERVER_NAME = "TISN | トイ神"
-DEFAULT_DESCRIPTION = "#raid by TOISHIN!!!!                お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww陰キャぼっち生活楽しんでる？😂友達できるといいねwwあ、自hey!showだから無理かww😅"
-DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
+DEFAULT_DESCRIPTION = "お前らみたいな人生負け組のチー牛🧀🐮🤓と豚丼🐖には眩しすぎて入ることすらできないwww陰キャぼっち生活楽しんでる？😂友達できるといいねwwあ、自hey!showだから無理かww😅"
+DEFAULT_INVITE_LINK = "https://discord.gg/yMjkgmg7tS"
 
-# ✅ 0.0 = 全弾同時発射（discord.py のレートリミッタに速度を任せる＝最速）
 SEND_INTERVAL = 0.0
-MAX_CONCURRENCY = 5
+MAX_CONCURRENCY = 4
 FOLLOWUP_LIMIT = 5
 
 DEFAULT_SEND_COUNT = 5
-_send_count: dict[int, int] = {}      # guild_id -> 回数
-_mention_mode: dict[int, str] = {}    # guild_id -> "auto" / "on" / "off"
+_send_count: dict[int, int] = {}
+_mention_mode: dict[int, str] = {}
 
 def get_send_count(guild) -> int:
     return _send_count.get(getattr(guild, "id", 0), DEFAULT_SEND_COUNT)
@@ -151,34 +150,39 @@ async def get_bot_member(guild):
             return None
     return None
 
-def channel_caps(channel, me) -> dict:
-    """投稿可否・添付可否を事前に確定。me が None なら楽観的に許可。"""
-    caps = {"send": True, "attach": True}
-    if me is None:
-        return caps
+def channel_caps(channel, me, user=None) -> dict:
+    """Bot未導入なら操作ユーザーの権限で代替判定する（実効権限はユーザー側）。"""
+    caps = {"send": False, "attach": False}
+    subject = me
+    if subject is None:
+        subject = user if isinstance(user, discord.Member) else None
+    if subject is None:
+        # 判定不能 → 楽観的に許可（実送信で判断）
+        return {"send": True, "attach": True}
     try:
-        p = channel.permissions_for(me)
+        p = channel.permissions_for(subject)
         caps["send"] = p.send_messages
         caps["attach"] = p.attach_files
     except Exception:
-        pass
+        return {"send": True, "attach": True}
     return caps
 
-async def get_sendable_text_channels(guild, me):
+async def get_sendable_text_channels(guild, me, user=None):
     if guild is None:
         return []
     out = []
     for ch in guild.text_channels:
         try:
-            if me and ch.permissions_for(me).view_channel:
-                out.append(ch)
+            if me:
+                if ch.permissions_for(me).view_channel:
+                    out.append(ch)
+            elif isinstance(user, discord.Member):
+                if ch.permissions_for(user).view_channel:
+                    out.append(ch)
         except Exception:
             continue
     return out
 
-# ==============================
-# ✅ @everyone 判定（判定対象を「投稿主体」に修正）
-# ==============================
 async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if mode == "on":
         return True, "✅ 手動指定: つける"
@@ -190,30 +194,22 @@ async def resolve_mention(interaction, mode: str) -> tuple[bool, str]:
     if guild is None or channel is None:
         return True, "✅ DM判定: つける"
 
-    # ① Botがサーバーに居る → 実際に投稿するBotの権限で判定（これが正解）
     me = await get_bot_member(guild)
-    if me is not None:
+    subject = me or (interaction.user if isinstance(interaction.user, discord.Member) else None)
+    if subject is not None:
         try:
-            ok = channel.permissions_for(me).mention_everyone
-            print(f"[権限判定] Bot自身の mention_everyone={ok}")
-            return (ok, "✅ 自動判定: Botに権限あり" if ok else "❌ 自動判定: Botに権限なし")
+            ok = channel.permissions_for(subject).mention_everyone
+            who = "Bot" if me else "ユーザー"
+            return (ok, f"✅ 自動判定: {who}に権限あり" if ok else f"❌ 自動判定: {who}に権限なし")
         except Exception as e:
-            print(f"[権限判定] Bot権限取得失敗: {type(e).__name__}: {e}")
-
-    # ② 未導入（個人インストール）→ 操作ユーザーの権限で代替判定
-    user = interaction.user
-    if isinstance(user, discord.Member):
-        try:
-            ok = channel.permissions_for(user).mention_everyone
-            print(f"[権限判定] ユーザー権限で代替判定: mention_everyone={ok}")
-            return ok, ("✅ 自動判定: 権限あり" if ok else "❌ 自動判定: 権限なし")
-        except Exception:
-            pass
+            print(f"[権限判定] 取得失敗: {type(e).__name__}: {e}")
 
     return True, "✅ 自動判定: 不明→つける"
 
 def build_advertisement_text(guild) -> str:
     lines = [
+        RAID_HEADER,
+        "",
         f"# **🎉 {DEFAULT_SERVER_NAME} に参加しよう！**",
         f"# **{DEFAULT_DESCRIPTION}**",
         f"# **🔗 招待リンク: {DEFAULT_INVITE_LINK}**",
@@ -223,69 +219,86 @@ def build_advertisement_text(guild) -> str:
     return "\n".join(lines)
 
 # ==============================
-# ✅ 1通送信（403で自動ダウングレード）
+# ✅ 1通配信
+#   添付の403と送信経路の403を切り分ける
 # ==============================
-async def _post_once(target, content, mention, state):
+async def deliver(content, mention, channel, followup, state) -> bool:
     am = discord.AllowedMentions(everyone=mention, roles=False, users=False)
+    has_file = GIF_BYTES is not None
 
-    if state["attach"]:
-        f = make_gif_file()
-        if f:
-            try:
-                await target.send(content=content, file=f, allowed_mentions=am)
-                return
-            except discord.Forbidden:
+    for use_native in (True, False):
+        if use_native and not state["native"]:
+            continue
+        target = channel if use_native else followup
+        if target is None:
+            continue
+
+        # ① 添付つきで試す
+        if has_file and state["attach"]:
+            f = make_gif_file()
+            if f is not None:
+                try:
+                    await target.send(content=content, file=f, allowed_mentions=am)
+                    return True
+                except discord.Forbidden:
+                    print(f"[送信] ⚠️ 添付拒否 ({'native' if use_native else 'followup'}) → テキストで再試行")
+                except discord.HTTPException as e:
+                    print(f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')} (添付)")
+                except Exception as e:
+                    print(f"[送信] ⚠️ {type(e).__name__} (添付): {e}")
+
+        # ② テキストで試す
+        try:
+            await target.send(content=content, allowed_mentions=am)
+            # テキストは通った → 添付だけが不可だったと確定
+            if has_file and state["attach"]:
                 state["attach"] = False
-                print("[送信] ⚠️ ファイル添付権限なし → 以降テキストのみ")
-            except discord.HTTPException as e:
-                if getattr(e, "status", None) == 403:
-                    state["attach"] = False
-                    print("[送信] ⚠️ 添付拒否(403) → 以降テキストのみ")
-                else:
-                    raise
+                print("[送信] ℹ️ 添付は不可と確定 → 以降テキストのみ")
+            return True
+        except discord.Forbidden:
+            if use_native:
+                state["native"] = False
+                print("[送信] ⚠️ チャンネル送信不可 → followupに切替（添付設定は維持）")
+            else:
+                print("[送信] ❌ followupも拒否")
+        except discord.HTTPException as e:
+            print(f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}: {e}")
+        except Exception as e:
+            print(f"[送信] ⚠️ {type(e).__name__}: {e}")
 
-    await target.send(content=content, allowed_mentions=am)
+    return False
 
 # ==============================
-# ✅ バースト送信本体
+# ✅ バースト送信
 # ==============================
 async def run_spam(channel, followup, guild, count, mention, state):
-    content = build_advertisement_text(guild)
-    prefix = "@everyone " if mention else ""
-    body = f"{prefix}{content}"
+    body = build_advertisement_text(guild)
+    if mention:
+        body = f"@everyone\n{body}"
 
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
-    ok = fail = 0
+    ok = 0
+    fail = 0
 
     async def one(i: int):
         nonlocal ok, fail
         if SEND_INTERVAL > 0:
             await asyncio.sleep(SEND_INTERVAL * i)
         async with sem:
+            done = False
             for attempt in range(3):
-                target = channel if state["native"] else followup
                 try:
-                    await _post_once(target, body, mention, state)
-                    ok += 1
-                    return
-                except discord.Forbidden:
-                    if state["native"]:
-                        state["native"] = False
-                        print("[送信] ⚠️ チャンネル送信不可 → followupに切替")
-                        continue
-                    fail += 1
-                    return
-                except discord.HTTPException as e:
-                    if getattr(e, "status", None) == 429 and attempt < 2:
-                        await asyncio.sleep(1.0 * (attempt + 1))
-                        continue
-                    fail += 1
-                    print(f"[送信] ❌ {i+1}: {type(e).__name__}: {e}")
-                    return
+                    if await deliver(body, mention, channel, followup, state):
+                        done = True
+                        break
                 except Exception as e:
-                    fail += 1
                     print(f"[送信] ❌ {i+1}: {type(e).__name__}: {e}")
-                    return
+                await asyncio.sleep(0.8 * (attempt + 1))
+            if done:
+                ok += 1
+            else:
+                fail += 1
+                print(f"[送信] ❌ {i+1}: 全候補失敗")
 
     await asyncio.gather(*(one(i) for i in range(count)))
     print(f"[送信完了] 成功={ok} 失敗={fail}")
@@ -306,15 +319,15 @@ class SpamView(ui.View):
         guild = interaction.guild
         channel = interaction.channel
 
-        # ✅ 投稿経路を決定：Botがネイティブ投稿できるなら followup の5通上限を回避
-        state = {"native": False, "attach": True}
         me = await get_bot_member(guild) if guild else None
         if guild and me:
             caps = channel_caps(channel, me)
-            state["native"] = caps["send"]
-            state["attach"] = caps["attach"]
+            state = {"native": caps["send"], "attach": caps["attach"]}
         else:
-            state["attach"] = True
+            # ✅ Bot未導入：followupで投稿。添付可否はユーザー権限で判定
+            caps = channel_caps(channel, None, interaction.user) if guild else {"send": True, "attach": True}
+            state = {"native": False, "attach": caps["attach"]}
+        print(f"[起動] native={state['native']} attach={state['attach']}")
 
         try:
             await interaction.response.defer(ephemeral=False)
@@ -324,7 +337,7 @@ class SpamView(ui.View):
 
         count = self.count
         if not state["native"] and count > FOLLOWUP_LIMIT:
-            print(f"[ボタン] followup上限のため {count} → {FOLLOWUP_LIMIT} に制限")
+            print(f"[ボタン] followup上限のため {count} → {FOLLOWUP_LIMIT}")
             count = FOLLOWUP_LIMIT
 
         try:
@@ -346,15 +359,15 @@ class SpamAllView(ui.View):
         await interaction.response.defer(ephemeral=True)
 
         me = await get_bot_member(guild)
+        user = interaction.user
         if me is None:
             await interaction.followup.send(
-                "## ❌ **Botがサーバーに居ないため全チャンネル送信は不可です。**\n"
-                "/spam（このチャンネルのみ）を使ってください。",
+                "## ❌ **Botが未導入のため全チャンネル送信は不可です。**\n/spam を使ってください。",
                 ephemeral=True,
             )
             return
 
-        channels = await get_sendable_text_channels(guild, me)
+        channels = await get_sendable_text_channels(guild, me, user)
         if not channels:
             await interaction.followup.send("## ❌ **送信可能なチャンネルがありません。**", ephemeral=True)
             return
@@ -362,7 +375,7 @@ class SpamAllView(ui.View):
         results = []
 
         async def worker(ch):
-            caps = channel_caps(ch, me)
+            caps = channel_caps(ch, me, user)
             if not caps["send"]:
                 results.append((ch.name, "skip"))
                 return
@@ -372,7 +385,7 @@ class SpamAllView(ui.View):
 
         await asyncio.gather(*(worker(c) for c in channels))
 
-        done = sum(1 for _, r in results if r not in ("skip",))
+        done = sum(1 for _, r in results if r != "skip")
         skip = sum(1 for _, r in results if r == "skip")
         detail = "\n".join(f"・#{n}: {r}" for n, r in results[:20])
         await interaction.followup.send(
@@ -395,9 +408,13 @@ async def cmd_spam(interaction: discord.Interaction, everyone: Optional[str] = N
     mention, reason = await resolve_mention(interaction, mode)
     count = get_send_count(interaction.guild)
 
-    print(f"[/spam] guild={getattr(interaction.guild, 'id', 'DM')} mode={mode} → {reason} count={count}")
+    warn = ""
+    me = await get_bot_member(interaction.guild) if interaction.guild else None
+    if interaction.guild and me is None:
+        warn = "\n## ⚠️ **Bot未導入のため最大5通に制限されます（GIFは送れます）。**"
+
     await interaction.response.send_message(
-        f"🤓 **ボタンを押してスパム開始！**\n📋 @everyone: {reason}\n🔢 回数: {count}",
+        f"🤓 **ボタンを押してスパム開始！**\n📋 @everyone: {reason}\n🔢 回数: {count}{warn}",
         view=SpamView(mention=mention, reason=reason, count=count),
         ephemeral=True,
     )
@@ -416,7 +433,6 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
     mode = everyone or get_mention_mode(interaction.guild)
     mention, reason = await resolve_mention(interaction, mode)
     count = get_send_count(interaction.guild)
-
     await interaction.response.send_message(
         f"💥 **全チャンネル送信の準備**\n📋 @everyone: {reason}\n🔢 各ch {count}回",
         view=SpamAllView(mention=mention, reason=reason, count=count),
@@ -433,18 +449,13 @@ async def cmd_setcount(interaction: discord.Interaction, count: int):
         await interaction.response.send_message("# ❌ **1以上で指定してください。**", ephemeral=True)
         return
     _send_count[getattr(interaction.guild, "id", 0)] = count
-    warn = ""
-    if count > FOLLOWUP_LIMIT:
-        warn = (
-            f"\n## ⚠️ **Botが未導入の状態では {FOLLOWUP_LIMIT}回までに自動制限されます。**"
-            "\n## 💡 **Botをサーバーに招待すれば上限なしで送信できます。**"
-        )
+    warn = "\n## ⚠️ **Bot未導入時は5回に自動制限されます。**" if count > FOLLOWUP_LIMIT else ""
     await interaction.response.send_message(
         f"# ✅ **送信回数を {count}回 に変更しました。**{warn}", ephemeral=True
     )
 
 # ==============================
-# /setinterval（0 = 全弾同時）
+# /setinterval
 # ==============================
 @tree.command(name="setinterval", description="送信間隔を変更（0 = 最速の同時送信）")
 @app_commands.describe(interval="送信間隔（秒）。0で最速")
@@ -469,7 +480,7 @@ async def prefix_setinterval(ctx, interval: float = 0.0):
     await ctx.send(f"# ✅ **送信間隔を {SEND_INTERVAL}秒 に変更しました。**")
 
 # ==============================
-# /seteveryone（自動判定の永続設定）
+# /seteveryone
 # ==============================
 @tree.command(name="seteveryone", description="@everyone の自動判定を設定します")
 @app_commands.choices(mode=[
