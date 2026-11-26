@@ -179,7 +179,7 @@ def cfg(user_id) -> dict:
     return c
 
 def seed_from_env():
-    """BOT_TOKENS / RAID_ROLE_IDS を「最初の実行者の初期値」として流し込む"""
+    """BOT_TOKENS / RAID_ROLE_IDS を「最初の実行者」の初期値として流し込む"""
     if not _CFG:
         return
     tokens = [t.strip() for t in os.environ.get("BOT_TOKENS", "").split(",") if t.strip()]
@@ -1035,7 +1035,7 @@ class SpamAllView(ui.View):
 # ==============================
 @tree.command(name="spam", description="宣伝メッセージを送信します（ボタンを押して実行）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(everyone="@everyone の扱い（未指定＝自分の設定）")
 @app_commands.choices(everyone=MENTION_CHOICES)
 async def cmd_spam(interaction: discord.Interaction, everyone: Optional[str] = None):
@@ -1062,7 +1062,7 @@ async def cmd_spam(interaction: discord.Interaction, everyone: Optional[str] = N
 # ==============================
 @tree.command(name="seed", description="このチャンネルを一括送信の対象にします（Bot未導入鯖用）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_seed(interaction: discord.Interaction):
     gid = interaction.guild_id
     cid = interaction.channel_id
@@ -1072,7 +1072,7 @@ async def cmd_seed(interaction: discord.Interaction):
         )
         return
 
-    lst = SEEDS.setdefault(gid, [])
+    SEEDS.setdefault(gid, [])
     _gc_seeds(gid)
     lst = SEEDS.get(gid) or []
 
@@ -1101,7 +1101,7 @@ async def cmd_seed(interaction: discord.Interaction):
 
 @tree.command(name="seedlist", description="設置済みチャンネルを表示します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_seedlist(interaction: discord.Interaction):
     seeds = user_seeds(interaction.guild_id, interaction.user.id)
     if not seeds:
@@ -1120,7 +1120,7 @@ async def cmd_seedlist(interaction: discord.Interaction):
 
 @tree.command(name="seedclear", description="設置をすべて解除します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_seedclear(interaction: discord.Interaction):
     gid = interaction.guild_id
     lst = SEEDS.get(gid) or []
@@ -1137,7 +1137,7 @@ async def cmd_seedclear(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="spamall", description="全チャンネルに一括送信します（未導入鯖は /seed で設置）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 @app_commands.describe(
     everyone="@everyone の扱い（未指定＝自分の設定）",
     waves="全体を何周するか",
@@ -1183,7 +1183,7 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
 # ==============================
 @tree.command(name="setcount", description="自分の送信回数を変更します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(count="送信回数")
 async def cmd_setcount(interaction: discord.Interaction, count: int):
     if count < 1:
@@ -1205,7 +1205,7 @@ async def cmd_setcount(interaction: discord.Interaction, count: int):
 # ==============================
 @tree.command(name="setinterval", description="自分の送信間隔を変更（0 = 最速）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(interval="送信間隔（秒）。0で最速")
 async def cmd_setinterval(interaction: discord.Interaction, interval: float):
     if interval < 0:
@@ -1234,7 +1234,7 @@ async def prefix_setinterval(ctx, interval: float = 0.0):
 # ==============================
 @tree.command(name="seteveryone", description="自分の @everyone の扱いを設定します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.choices(mode=MENTION_CHOICES)
 async def cmd_seteveryone(interaction: discord.Interaction, mode: str):
     c = cfg(interaction.user.id)
@@ -1250,7 +1250,7 @@ async def cmd_seteveryone(interaction: discord.Interaction, mode: str):
 # ==============================
 @tree.command(name="setpower", description="自分の1発の重さを変更します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.choices(mode=POWER_CHOICES)
 async def cmd_setpower(interaction: discord.Interaction, mode: str):
     c = cfg(interaction.user.id)
@@ -1265,7 +1265,7 @@ async def cmd_setpower(interaction: discord.Interaction, mode: str):
 # ==============================
 @tree.command(name="setignore", description="自分の除外チャンネル名（前方一致・カンマ区切り）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 @app_commands.describe(names="除外名（空で解除）")
 async def cmd_setignore(interaction: discord.Interaction, names: str = ""):
     c = cfg(interaction.user.id)
@@ -1280,7 +1280,7 @@ async def cmd_setignore(interaction: discord.Interaction, names: str = ""):
 # ==============================
 @tree.command(name="addtoken", description="サブBotのトークンを自分のレーンに登録します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(token="Botトークン", label="表示名（任意）")
 async def cmd_addtoken(interaction: discord.Interaction, token: str, label: str = ""):
     await interaction.response.defer(ephemeral=True)
@@ -1326,7 +1326,7 @@ async def cmd_addtoken(interaction: discord.Interaction, token: str, label: str 
 # ==============================
 @tree.command(name="deltoken", description="登録したトークンを削除します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(number="番号（/mytokens で確認）")
 async def cmd_deltoken(interaction: discord.Interaction, number: int):
     c = cfg(interaction.user.id)
@@ -1356,7 +1356,7 @@ async def cmd_deltoken(interaction: discord.Interaction, number: int):
 # ==============================
 @tree.command(name="mytokens", description="登録したトークンを一覧表示します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def cmd_mytokens(interaction: discord.Interaction):
     c = cfg(interaction.user.id)
     if not c["tokens"]:
@@ -1377,7 +1377,7 @@ async def cmd_mytokens(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="addrole", description="踏みつけ用ロールIDを登録します（1通ごとに巡回）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(role="ロール（サーバーのロールから選択 or ID）")
 async def cmd_addrole(interaction: discord.Interaction, role: str):
     rid = None
@@ -1404,7 +1404,7 @@ async def cmd_addrole(interaction: discord.Interaction, role: str):
 
 @tree.command(name="delrole", description="登録したロールを削除します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(number="番号（/myroles で確認）")
 async def cmd_delrole(interaction: discord.Interaction, number: int):
     c = cfg(interaction.user.id)
@@ -1421,7 +1421,7 @@ async def cmd_delrole(interaction: discord.Interaction, number: int):
 
 @tree.command(name="myroles", description="登録したロールを一覧表示します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def cmd_myroles(interaction: discord.Interaction):
     c = cfg(interaction.user.id)
     if not c["roles"]:
@@ -1435,7 +1435,7 @@ async def cmd_myroles(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="cleanwh", description="生成したウェブフック(raid)を一括削除します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_cleanwh(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     if interaction.guild is None:
@@ -1449,7 +1449,7 @@ async def cmd_cleanwh(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="myconfig", description="自分の全設定を表示します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def cmd_myconfig(interaction: discord.Interaction):
     c = cfg(interaction.user.id)
     await interaction.response.send_message(
@@ -1469,7 +1469,7 @@ async def cmd_myconfig(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="resetconfig", description="自分の設定を初期値に戻します（トークンは残す）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=True, private_channel=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def cmd_resetconfig(interaction: discord.Interaction):
     c = cfg(interaction.user.id)
     tokens = c["tokens"]
@@ -1484,7 +1484,7 @@ async def cmd_resetconfig(interaction: discord.Interaction):
 # ==============================
 @tree.command(name="permcheck", description="権限判定の生データを表示します（デバッグ用）")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_permcheck(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -1555,7 +1555,7 @@ async def on_guild_join(guild):
 
 @tree.command(name="getverified", description="認証ロールをBotに自動付与します")
 @app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guild=True, dm_channel=False, private_channel=False)
+@app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 async def cmd_getverified(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     granted = await auto_grant_verified_role(interaction.guild)
