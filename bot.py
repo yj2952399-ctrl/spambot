@@ -1,12 +1,13 @@
 print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 
 # ============================================================
-# 外部モード専用版（最速・連打OK）
-#  - 直送は HTTPClient のシグネチャを実行時判定（send_files/send_file/send_message 全部対応）
-#    discord.py のバージョン差で落ちないようにする。
-#  - セマフォ撤去。全弾同時発火。待ちは 429 の retry_after のみ。
-#  - /spamall は設置チャンネルへ並列発火。連打で重複実行OK。
-#  - 進捗・完了のメッセージ編集は行わない（編集済み表示なし）。結果はコンソールのみ。
+# 外部モード専用版（バケット制御・連打OK）
+#  - 直送は HTTPClient のシグネチャを実行時判定（send_files/send_file/send_message 対応）
+#  - 送信は webhook(=チャンネル)単位のトークンバケットで制御。
+#    5発まで即時、以降は1発/秒で流すので 429 の渋滞が起きない。
+#    連打しても全弾キューに積まれ、上限速度で順番に飛ぶ。
+#  - /spamall は設置チャンネルへ並列発火。重複実行OK。
+#  - 進捗・完了のメッセージ編集は行わない。結果はコンソールのみ。
 #  - テキストは Orangestar 版で固定。
 # ============================================================
 
@@ -28,7 +29,6 @@ import discord
 from discord import ui, app_commands
 from discord.ext import commands
 
-# ✅ 429のWARNINGを黙らせる（discord.py内部ロガー）
 logging.getLogger("discord.http").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 
@@ -112,10 +112,13 @@ DEFAULT_SERVER_NAME = "トイ神の集い"
 DEFAULT_DESCRIPTION = "Orangestarは神！！！！今すぐOrangestarの曲を聴いて君も蜜柑星人になろう🍊https://youtube.com/@orangestaras?si=WfcQEqBYvcgqC7PT"
 DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
 
-FOLLOWUP_LIMIT = 30          # interaction webhook の実用上限（15分窓の中で撃ち切る）
+FOLLOWUP_LIMIT = 30
 RETRY_MAX = 4
 
-SEED_TTL = 14 * 60           # interaction webhook の寿命より少し短く
+BUCKET_BURST = 5.0           # バケット容量（Discord の webhook 上限と同じ 5）
+BUCKET_PER = 5.0             # 5秒で満タン
+
+SEED_TTL = 14 * 60
 
 DEFAULT_SEND_COUNT = 5
 DEFAULT_POWER = "normal"
@@ -134,7 +137,7 @@ MENTION_CHOICES = [
 ]
 
 # ==============================
-# 利用者別設定ストア（config.json 永続化）
+# 利用者別設定ストア
 # ==============================
 CFG_PATH = os.environ.get(
     "CFG_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -147,9 +150,9 @@ def _blank_cfg() -> dict:
         "power": DEFAULT_POWER,
         "interval": DEFAULT_INTERVAL,
         "mention": DEFAULT_MENTION,
-        "tokens": [],   # [{"token": str, "label": str}]
-        "roles": [],    # [int]
-        "ignore": [],   # [str]
+        "tokens": [],
+        "roles": [],
+        "ignore": [],
     }
 
 def load_cfg():
@@ -187,7 +190,6 @@ def cfg(user_id) -> dict:
     return c
 
 def seed_from_env():
-    """BOT_TOKENS / RAID_ROLE_IDS を「最初の実行者」の初期値として流し込む"""
     if not _CFG:
         return
     tokens = [t.strip() for t in os.environ.get("BOT_TOKENS", "").split(",") if t.strip()]
@@ -211,7 +213,7 @@ seed_from_env()
 SEED_PATH = os.environ.get(
     "SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seeds.json")
 )
-SEEDS: dict[int, list[dict]] = {}   # guild_id -> [seed]
+SEEDS: dict[int, list[dict]] = {}
 
 def load_seeds():
     global SEEDS
@@ -280,12 +282,48 @@ def user_seeds(guild_id: int, user_id: int) -> list[dict]:
 load_seeds()
 
 # ==============================
-# 実行中カウンタ（表示用・ロックなし）
+# 実行中カウンタ（表示用）
 # ==============================
 ACTIVE: dict[int, int] = {}
 
 def active_of(user_id: int) -> int:
     return ACTIVE.get(user_id, 0)
+
+# ==============================
+# ✅ 送信バケット（webhook/チャンネル単位）
+#    5発まで即時、以降 1発/秒。429 を出さずに上限速度で流す。
+# ==============================
+class Bucket:
+    def __init__(self, burst: float = BUCKET_BURST, per: float = BUCKET_PER):
+        self.capacity = burst
+        self.per = per
+        self.tokens = burst
+        self.updated = time.monotonic()
+        self.lock = asyncio.Lock()
+
+    async def acquire(self):
+        while True:
+            async with self.lock:
+                now = time.monotonic()
+                self.tokens = min(
+                    self.capacity,
+                    self.tokens + (now - self.updated) * (self.capacity / self.per),
+                )
+                self.updated = now
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return
+                wait = (1.0 - self.tokens) * (self.per / self.capacity)
+            await asyncio.sleep(wait)
+
+_buckets: dict[tuple, Bucket] = {}
+
+def bucket_for(key: tuple) -> Bucket:
+    b = _buckets.get(key)
+    if b is None:
+        b = Bucket()
+        _buckets[key] = b
+    return b
 
 # ==============================
 # キープアライブ
@@ -315,7 +353,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # ==============================
-# ✅ HTTP直送（discord.py のバージョン差を吸収）
+# ✅ HTTP直送（バージョン差を吸収）
 # ==============================
 def _accepts(fn, name: str) -> bool:
     try:
@@ -324,7 +362,6 @@ def _accepts(fn, name: str) -> bool:
         return False
 
 async def http_send(http, ch_id: int, content: str, file, allowed, embeds=None):
-    """send_files / send_file / send_message のどれでも撃てるようにする"""
     kw = {}
     if _accepts(http.send_message, "allowed_mentions"):
         kw["allowed_mentions"] = allowed
@@ -353,7 +390,7 @@ async def http_send(http, ch_id: int, content: str, file, allowed, embeds=None):
         await http.send_message(ch_id, content, **kw)
 
 # ==============================
-# トークンプール（利用者ごとに独立）
+# トークンプール
 # ==============================
 class Sender:
     def __init__(self, label: str, token: str = None, http=None):
@@ -398,6 +435,8 @@ class TokenPool:
         s = await self.pick()
         if s is None:
             raise RuntimeError("sender exhausted")
+        # トークンごとに独立したバケット（レート制限はトークン単位）
+        await bucket_for((s.label, channel_id)).acquire()
         await http_send(s.http, channel_id, content, file, allowed, embeds)
 
 POOLS: dict[int, TokenPool] = {}
@@ -722,14 +761,13 @@ def new_state(native: bool, attach: bool, power: str, allow_followup: bool = Tru
     }
 
 def take_file(state):
-    """GIFは1通だけ。競合しないよう先にフラグを立てる"""
     if GIF_BYTES is None or not state.get("attach", False) or state.get("attach_used"):
         return None
     state["attach_used"] = True
     return discord.File(io.BytesIO(GIF_BYTES), filename="toykami.gif")
 
 # ==============================
-# ✅ 1通配信（/spam 用：直送 → webhook → followup）
+# ✅ 1通配信（/spam 用）
 # ==============================
 async def deliver(content, mention, channel, followup, state, roles, embeds=None) -> bool:
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
@@ -754,11 +792,12 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
         except Exception as e:
             note(state, f"ex:{type(e).__name__}", f"[送信] ⚠️ {type(e).__name__}: {e}")
 
-    # 2) ウェブフック別レーン
+    # 2) ウェブフック
     if state.get("webhook") and ch_id is not None:
         wh = await get_webhook(channel)
         if wh is not None:
             try:
+                await bucket_for(("wh", ch_id)).acquire()
                 await wh.send(
                     content=content, embeds=embeds or [], allowed_mentions=am,
                     username="TOISHIN", wait=False,
@@ -770,6 +809,8 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
     # 3) followup
     if followup is not None and state.get("allow_followup", True):
         try:
+            if ch_id is not None:
+                await bucket_for(("fu", ch_id)).acquire()
             await followup.send(
                 content=content, file=file, embeds=embeds or [], allowed_mentions=am
             )
@@ -786,7 +827,7 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
     return False
 
 # ==============================
-# ✅ バースト送信（全弾同時・セマフォなし）
+# ✅ バースト送信（/spam）
 # ==============================
 async def run_spam(channel, followup, guild, count, mention, state, roles):
     body = build_body(guild, mention, roles)
@@ -821,7 +862,7 @@ async def run_spam(channel, followup, guild, count, mention, state, roles):
     return ok, fail
 
 # ==============================
-# ✅ シード送信（全弾同時発火・待ちは retry_after のみ）
+# ✅ シード送信（バケット経由・全弾キュー投入）
 # ==============================
 async def run_spam_seed(seed, guild, count, mention, state, roles):
     wh = seed.get("webhook")
@@ -833,6 +874,7 @@ async def run_spam_seed(seed, guild, count, mention, state, roles):
     embeds = build_embeds(guild) if state.get("power") == "heavy" else None
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
     interval = state.get("interval", 0.0)
+    gate = bucket_for(("seed", seed["channel_id"]))
 
     ok = 0
     fail = 0
@@ -847,6 +889,7 @@ async def run_spam_seed(seed, guild, count, mention, state, roles):
                 return
             file = take_file(state)
             try:
+                await gate.acquire()
                 kw = {
                     "content": body,
                     "embeds": embeds or [],
@@ -1198,7 +1241,7 @@ async def cmd_setcount(interaction: discord.Interaction, count: int):
 # ==============================
 # /setinterval
 # ==============================
-@tree.command(name="setinterval", description="自分の送信間隔を変更（0 = 最速・全弾同時）")
+@tree.command(name="setinterval", description="自分の送信間隔を変更（0 = 最速・バケット任せ）")
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(interval="送信間隔（秒）。0で最速")
@@ -1209,7 +1252,7 @@ async def cmd_setinterval(interaction: discord.Interaction, interval: float):
     c = cfg(interaction.user.id)
     c["interval"] = interval
     save_cfg()
-    note_txt = "（全弾同時・レートリミッタ任せ）" if interval == 0 else ""
+    note_txt = "（バケット上限で自動制御）" if interval == 0 else ""
     await interaction.response.send_message(
         f"# ✅ **送信間隔を {interval}秒 に変更しました。**{note_txt}", ephemeral=True
     )
