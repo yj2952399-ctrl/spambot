@@ -1,13 +1,12 @@
 print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 
 # ============================================================
-# 外部モード専用版
-#  - /spamall は「/seed で設置したチャンネル」にだけ撃つ。通常モード分岐は撤去。
-#  - /spam（1ch用）はそのまま維持。
-#  - 連打対策: ユーザー単位の実行ロックで直列化＋実行待ちは最大2件。
-#    さらに同一チャンネルへの送信間隔をプロセス全体でゲート（429連鎖を防ぐ）。
-#  - SEEDS は seeds.json に永続化。再起動してもトークン寿命までは生きる。
-#  - 期限切れ設置は送信前に分離し、結果に "expired" と表示。
+# 外部モード専用版（最速・連打OK）
+#  - 直送は HTTPClient のシグネチャを実行時判定（send_files/send_file/send_message 全部対応）
+#    discord.py のバージョン差で落ちないようにする。
+#  - セマフォ撤去。全弾同時発火。待ちは 429 の retry_after のみ。
+#  - /spamall は設置チャンネルへ並列発火。連打で重複実行OK。
+#  - 進捗・完了のメッセージ編集は行わない（編集済み表示なし）。結果はコンソールのみ。
 #  - テキストは Orangestar 版で固定。
 # ============================================================
 
@@ -17,6 +16,7 @@ import json
 import random
 import time
 import asyncio
+import inspect
 import logging
 import threading
 import traceback
@@ -112,17 +112,10 @@ DEFAULT_SERVER_NAME = "トイ神の集い"
 DEFAULT_DESCRIPTION = "Orangestarは神！！！！今すぐOrangestarの曲を聴いて君も蜜柑星人になろう🍊https://youtube.com/@orangestaras?si=WfcQEqBYvcgqC7PT"
 DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
 
-MAX_CONCURRENCY = 6          # followupウェブフックのバケット(5/5s)を埋め切る
-ALL_CONCURRENCY = 16
 FOLLOWUP_LIMIT = 30          # interaction webhook の実用上限（15分窓の中で撃ち切る）
-SPAMALL_REPORT_INTERVAL = 2.0
 RETRY_MAX = 4
 
 SEED_TTL = 14 * 60           # interaction webhook の寿命より少し短く
-
-SEND_GAP_MIN = 0.55          # 同一chへの最小送信間隔（5/5s を踏まない）
-SEND_GAP_SPAM = 0.25         # /spam 用の最小間隔
-QUEUE_MAX = 2                # 実行待ちの許容件数
 
 DEFAULT_SEND_COUNT = 5
 DEFAULT_POWER = "normal"
@@ -213,10 +206,7 @@ load_cfg()
 seed_from_env()
 
 # ==============================
-# 外部モード用シード（Bot未導入鯖で interaction webhook を確保する）
-#   設置は ephemeral 応答なのでチャンネルに痕跡が残らない。
-#   送信はアプリ名義（=実行者は出ない）。
-#   seeds.json に永続化（再起動してもトークン寿命までは生きる）
+# 外部モード用シード
 # ==============================
 SEED_PATH = os.environ.get(
     "SEED_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "seeds.json")
@@ -290,32 +280,12 @@ def user_seeds(guild_id: int, user_id: int) -> list[dict]:
 load_seeds()
 
 # ==============================
-# 連打対策（実行ロック／チャンネル間隔ゲート）
+# 実行中カウンタ（表示用・ロックなし）
 # ==============================
-RUN_LOCKS: dict[int, asyncio.Lock] = {}
-RUN_QUEUE: dict[int, int] = {}
-_chan_gate: dict[int, asyncio.Lock] = {}
-_chan_next: dict[int, float] = {}
+ACTIVE: dict[int, int] = {}
 
-async def wait_channel_slot(ch_id: Optional[int], gap: float = SEND_GAP_MIN):
-    """同一チャンネルへの送信間隔をプロセス全体で揃える（429連鎖を防ぐ）"""
-    if ch_id is None:
-        return
-    lock = _chan_gate.setdefault(ch_id, asyncio.Lock())
-    async with lock:
-        now = time.monotonic()
-        nxt = _chan_next.get(ch_id, 0.0)
-        if nxt > now:
-            await asyncio.sleep(nxt - now)
-            now = time.monotonic()
-        _chan_next[ch_id] = now + max(gap, SEND_GAP_MIN)
-
-def run_lock(user_id: int) -> asyncio.Lock:
-    lock = RUN_LOCKS.get(user_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        RUN_LOCKS[user_id] = lock
-    return lock
+def active_of(user_id: int) -> int:
+    return ACTIVE.get(user_id, 0)
 
 # ==============================
 # キープアライブ
@@ -345,8 +315,45 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # ==============================
+# ✅ HTTP直送（discord.py のバージョン差を吸収）
+# ==============================
+def _accepts(fn, name: str) -> bool:
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+async def http_send(http, ch_id: int, content: str, file, allowed, embeds=None):
+    """send_files / send_file / send_message のどれでも撃てるようにする"""
+    kw = {}
+    if _accepts(http.send_message, "allowed_mentions"):
+        kw["allowed_mentions"] = allowed
+    if embeds:
+        if _accepts(http.send_message, "embeds"):
+            kw["embeds"] = embeds
+        elif _accepts(http.send_message, "embed"):
+            kw["embed"] = embeds[0]
+
+    if file is not None:
+        if hasattr(http, "send_files"):
+            await http.send_files(ch_id, files=[file], content=content, **kw)
+            return
+        if hasattr(http, "send_file"):
+            try:
+                file.fp.seek(0)
+            except Exception:
+                pass
+            await http.send_file(ch_id, file.fp, filename=file.filename,
+                                 content=content, **kw)
+            return
+
+    if _accepts(http.send_message, "content"):
+        await http.send_message(ch_id, content=content, **kw)
+    else:
+        await http.send_message(ch_id, content, **kw)
+
+# ==============================
 # トークンプール（利用者ごとに独立）
-#   レート制限はトークン単位。登録数だけレーンが増える。
 # ==============================
 class Sender:
     def __init__(self, label: str, token: str = None, http=None):
@@ -391,13 +398,7 @@ class TokenPool:
         s = await self.pick()
         if s is None:
             raise RuntimeError("sender exhausted")
-        kw = {"content": content, "allowed_mentions": allowed}
-        if embeds:
-            kw["embeds"] = embeds
-        if file is not None:
-            await s.http.send_files(channel_id, files=[file], **kw)
-        else:
-            await s.http.send_message(channel_id, **kw)
+        await http_send(s.http, channel_id, content, file, allowed, embeds)
 
 POOLS: dict[int, TokenPool] = {}
 
@@ -410,7 +411,6 @@ def get_pool(user_id: int) -> TokenPool:
     return p
 
 async def rebuild_pool(user_id: int):
-    """cfgの内容からプールを作り直す（メイン＋登録トークン）"""
     old = POOLS.get(user_id)
     if old is not None:
         for s in old.senders:
@@ -431,7 +431,7 @@ def mask(token: str) -> str:
     return f"{token[:6]}…{token[-4:]}"
 
 # ==============================
-# ウェブフックレーン（バケットがWebhook ID単位＝完全な別枠）
+# ウェブフックレーン
 # ==============================
 _wh_cache: dict[int, discord.Webhook] = {}
 _wh_dead: set[int] = set()
@@ -469,7 +469,6 @@ async def cleanup_webhooks(guild):
 # ユーティリティ
 # ==============================
 def note(state, key: str, msg: str):
-    """同じ通知は1回だけ出す"""
     if key in state.setdefault("said", set()):
         return
     state["said"].add(key)
@@ -488,7 +487,6 @@ async def get_bot_member(guild):
     return None
 
 def _is_adminish(guild, subject) -> bool:
-    """所有者・管理者はチャンネル上書きを無視できる"""
     if guild is None or subject is None:
         return False
     sid = getattr(subject, "id", None)
@@ -523,7 +521,6 @@ def _passes_ignore(user_id: int, ch) -> bool:
     return not any(name.startswith(p.lower()) for p in pats)
 
 async def get_sendable_text_channels(guild, me, user=None, user_id: int = 0):
-    """参考値：Bot（不在なら実行者）が送れるch。/permcheck 用。"""
     if guild is None:
         return []
     subject = me if me is not None else (user if isinstance(user, discord.Member) else None)
@@ -550,7 +547,6 @@ async def get_sendable_text_channels(guild, me, user=None, user_id: int = 0):
     return out
 
 async def _resolve_mention_channel(interaction):
-    """interaction.channel が PartialMessageable 等ならIDから引き直す"""
     ch = interaction.channel
     if ch is not None and hasattr(ch, "permissions_for"):
         return ch
@@ -567,7 +563,6 @@ async def _resolve_mention_channel(interaction):
     return ch
 
 async def _resolve_member(guild, user):
-    """interaction.user が Member でない（User/MISSING）場合に引き直す"""
     if isinstance(user, discord.Member):
         return user
     uid = getattr(user, "id", None)
@@ -581,7 +576,6 @@ async def _resolve_member(guild, user):
     except Exception:
         return None
 
-# ✅ @everyone：Discord計算済み権限(payload) → owner/admin → チャンネル → ギルド の順で見る
 def _perm_true(perms) -> Optional[bool]:
     if perms is None:
         return None
@@ -693,7 +687,6 @@ def build_advertisement_text(guild) -> str:
     return "\n".join(lines)
 
 def build_body(guild, mention: bool, roles: list[int]) -> str:
-    """1通を縦に伸ばす。@everyone ＋ ロール ＋ 本文二重化"""
     head = ""
     if mention:
         head = "@everyone\n"
@@ -720,7 +713,7 @@ def new_state(native: bool, attach: bool, power: str, allow_followup: bool = Tru
     return {
         "native": native,
         "attach": attach and power != "lite",
-        "attach_done": False,
+        "attach_used": False,
         "allow_followup": allow_followup,
         "webhook": webhook,
         "power": power,
@@ -728,30 +721,33 @@ def new_state(native: bool, attach: bool, power: str, allow_followup: bool = Tru
         "said": set(),
     }
 
+def take_file(state):
+    """GIFは1通だけ。競合しないよう先にフラグを立てる"""
+    if GIF_BYTES is None or not state.get("attach", False) or state.get("attach_used"):
+        return None
+    state["attach_used"] = True
+    return discord.File(io.BytesIO(GIF_BYTES), filename="toykami.gif")
+
 # ==============================
 # ✅ 1通配信（/spam 用：直送 → webhook → followup）
 # ==============================
 async def deliver(content, mention, channel, followup, state, roles, embeds=None) -> bool:
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
     ch_id = getattr(channel, "id", None)
+    file = take_file(state)
 
-    want_file = (
-        GIF_BYTES is not None
-        and state.get("attach", False)
-        and not state.get("attach_done", False)
-    )
-    file = discord.File(io.BytesIO(GIF_BYTES), filename="toykami.gif") if want_file else None
-
-    # 1) プール直送（招待済み鯖のみ）
+    # 1) プール直送
     pool = state.get("pool")
     if state.get("native") and ch_id is not None and pool is not None and pool.senders:
         try:
             await pool.send(ch_id, content, file, am, embeds)
-            state["attach_done"] = True
             return True
         except discord.Forbidden:
             state["native"] = False
             note(state, "no-native", "[送信] ⚠️ チャンネル直送は不可")
+        except (AttributeError, TypeError) as e:
+            state["native"] = False
+            note(state, "bad-native", f"[送信] ⚠️ 直送API不一致 → followupへ: {type(e).__name__}: {e}")
         except discord.HTTPException as e:
             note(state, f"http:{getattr(e, 'status', '?')}",
                  f"[送信] ⚠️ HTTP {getattr(e, 'status', '?')}")
@@ -767,18 +763,16 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
                     content=content, embeds=embeds or [], allowed_mentions=am,
                     username="TOISHIN", wait=False,
                 )
-                state["attach_done"] = True
                 return True
             except Exception as e:
                 note(state, f"wh:{type(e).__name__}", f"[送信] ⚠️ wh {type(e).__name__}")
 
-    # 3) followup（外部モードの主レーン）
+    # 3) followup
     if followup is not None and state.get("allow_followup", True):
         try:
             await followup.send(
                 content=content, file=file, embeds=embeds or [], allowed_mentions=am
             )
-            state["attach_done"] = True
             return True
         except discord.Forbidden:
             state["allow_followup"] = False
@@ -792,38 +786,34 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
     return False
 
 # ==============================
-# ✅ バースト送信（/spam 用）
+# ✅ バースト送信（全弾同時・セマフォなし）
 # ==============================
-async def run_spam(channel, followup, guild, count, mention, state, roles,
-                   sem=None, progress=None):
+async def run_spam(channel, followup, guild, count, mention, state, roles):
     body = build_body(guild, mention, roles)
     embeds = build_embeds(guild) if state.get("power") == "heavy" else None
     interval = state.get("interval", 0.0)
-    ch_id = getattr(channel, "id", None)
 
-    local_sem = sem or asyncio.Semaphore(MAX_CONCURRENCY)
     ok = 0
     fail = 0
 
     async def one(i: int):
         nonlocal ok, fail
         if interval > 0:
-            await asyncio.sleep(interval * i + random.random() * 0.05)
+            await asyncio.sleep(interval * i + random.random() * 0.03)
         for attempt in range(RETRY_MAX):
-            async with local_sem:
-                try:
-                    await wait_channel_slot(ch_id, interval or SEND_GAP_SPAM)
-                    if await deliver(body, mention, channel, followup, state, roles, embeds):
-                        ok += 1
-                        if progress is not None:
-                            progress["done"] += 1
-                        return
-                except Exception as e:
-                    note(state, f"task:{type(e).__name__}", f"[送信] ❌ {type(e).__name__}: {e}")
-            await asyncio.sleep(0.3 * (attempt + 1) + random.random() * 0.4)
+            try:
+                if await deliver(body, mention, channel, followup, state, roles, embeds):
+                    ok += 1
+                    return
+            except discord.HTTPException as e:
+                if getattr(e, "status", 0) == 429:
+                    ra = getattr(e, "retry_after", None) or 0.5
+                    await asyncio.sleep(float(ra) + 0.05)
+                    continue
+            except Exception as e:
+                note(state, f"task:{type(e).__name__}", f"[送信] ❌ {type(e).__name__}: {e}")
+            await asyncio.sleep(0.15 * (attempt + 1))
         fail += 1
-        if progress is not None:
-            progress["done"] += 1
         note(state, "task-fail", "[送信] ❌ 全候補失敗のメッセージあり")
 
     await asyncio.gather(*(one(i) for i in range(count)))
@@ -831,12 +821,9 @@ async def run_spam(channel, followup, guild, count, mention, state, roles,
     return ok, fail
 
 # ==============================
-# ✅ シード送信（interaction webhook を1本ずつ順に叩く）
-#    バケットは webhook 単位なのでチャンネル間は並列でよい
-#    同一chへは wait_channel_slot で間隔を空ける（連打時の429対策）
-#    戻り値: (成功数, 失敗数, 断念理由 or None)
+# ✅ シード送信（全弾同時発火・待ちは retry_after のみ）
 # ==============================
-async def run_spam_seed(seed, guild, count, mention, state, roles, progress=None):
+async def run_spam_seed(seed, guild, count, mention, state, roles):
     wh = seed.get("webhook")
     if wh is None:
         wh = discord.Webhook.partial(bot.application_id, seed["token"], client=bot)
@@ -845,21 +832,20 @@ async def run_spam_seed(seed, guild, count, mention, state, roles, progress=None
     body = build_body(guild, mention, roles)
     embeds = build_embeds(guild) if state.get("power") == "heavy" else None
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
-    interval = state.get("interval", 0.0) or SEND_GAP_MIN
+    interval = state.get("interval", 0.0)
 
     ok = 0
     fail = 0
     dead = None
 
-    for i in range(count):
-        await wait_channel_slot(seed["channel_id"], interval)
-        sent = False
+    async def one(i: int):
+        nonlocal ok, fail, dead
+        if interval > 0:
+            await asyncio.sleep(interval * i + random.random() * 0.03)
         for attempt in range(RETRY_MAX):
-            want_file = (
-                GIF_BYTES is not None
-                and state.get("attach", False)
-                and not state.get("attach_done", False)
-            )
+            if dead:
+                return
+            file = take_file(state)
             try:
                 kw = {
                     "content": body,
@@ -867,40 +853,33 @@ async def run_spam_seed(seed, guild, count, mention, state, roles, progress=None
                     "allowed_mentions": am,
                     "wait": False,
                 }
-                if want_file:
-                    kw["file"] = discord.File(io.BytesIO(GIF_BYTES), filename="toykami.gif")
+                if file is not None:
+                    kw["file"] = file
                 await wh.send(**kw)
-                state["attach_done"] = True
-                sent = True
                 ok += 1
-                break
+                return
             except discord.NotFound:
-                dead = "expired"      # interaction token の寿命切れ
-                break
+                dead = "expired"
+                return
             except discord.Forbidden:
-                dead = "forbidden"    # 実行者がそのchに送れない
-                break
+                dead = "forbidden"
+                return
             except discord.HTTPException as e:
                 if getattr(e, "status", 0) == 429:
-                    ra = getattr(e, "retry_after", None) or 1.0
-                    await asyncio.sleep(float(ra) + 0.2)
+                    ra = getattr(e, "retry_after", None) or 0.5
+                    await asyncio.sleep(float(ra) + 0.05)
                 else:
-                    await asyncio.sleep(0.4 * (attempt + 1))
+                    await asyncio.sleep(0.15 * (attempt + 1))
             except Exception:
-                await asyncio.sleep(0.4 * (attempt + 1))
-        if dead:
-            break
-        if not sent:
-            fail += 1
-        if progress is not None:
-            progress["done"] += 1
+                await asyncio.sleep(0.15 * (attempt + 1))
+        fail += 1
+
+    await asyncio.gather(*(one(i) for i in range(count)))
 
     if dead:
         rest = count - ok - fail
         if rest > 0:
             fail += rest
-            if progress is not None:
-                progress["done"] += rest
         print(f"[シード] {seed['channel_name']}: 中断（{dead}）")
     return ok, fail, dead
 
@@ -946,7 +925,6 @@ class SpamView(ui.View):
             return
 
         if not native and count > FOLLOWUP_LIMIT:
-            print(f"[ボタン] followup上限のため {self.count} → {FOLLOWUP_LIMIT} に制限")
             count = FOLLOWUP_LIMIT
 
         lanes = f"直送{len(pool.senders)}レーン" if native else "followup"
@@ -976,53 +954,31 @@ class SpamAllView(ui.View):
             )
             return
 
-        gid = interaction.guild_id
-        if gid is None:
+        if interaction.guild_id is None:
             await interaction.response.send_message(
                 "## ❌ **サーバー内で実行してください。**", ephemeral=True
             )
             return
 
-        # 連打対策①：実行待ちが溜まりすぎたら弾く
-        waiting = RUN_QUEUE.get(self.owner_id, 0)
-        if waiting >= QUEUE_MAX:
-            await interaction.response.send_message(
-                f"## ⌛ **実行待ちが{waiting}件あります。**\n少し待ってから押してください。",
-                ephemeral=True,
-            )
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as e:
+            print(f"[spamall] defer失敗: {type(e).__name__}: {e}")
             return
 
-        await interaction.response.defer(ephemeral=True)
-
-        lock = run_lock(self.owner_id)
-        if lock.locked():
-            await interaction.followup.send(
-                "## ⏳ **前の送信が実行中です。**\n終了後に自動で開始します。", ephemeral=True
-            )
-
-        RUN_QUEUE[self.owner_id] = waiting + 1
+        ACTIVE[self.owner_id] = active_of(self.owner_id) + 1
         try:
-            # 連打対策②：ユーザー単位で直列化（同時実行させない）
-            async with lock:
-                await self._run(interaction)
+            await self._run(interaction)
         except Exception as e:
             print(f"[spamall] 例外: {type(e).__name__}: {e}")
             traceback.print_exc()
-            try:
-                await interaction.edit_original_response(
-                    content=f"## ❌ **送信中にエラーが発生しました。**\n`{type(e).__name__}`"
-                )
-            except Exception:
-                pass
         finally:
-            RUN_QUEUE[self.owner_id] = max(0, RUN_QUEUE.get(self.owner_id, 1) - 1)
+            ACTIVE[self.owner_id] = max(0, active_of(self.owner_id) - 1)
 
     async def _run(self, interaction: discord.Interaction):
         gid = interaction.guild_id
         guild = interaction.guild
-        me = await get_bot_member(guild) if guild else None
 
-        # ロック取得後に読み直す（待っている間に期限切れ／追加があり得る）
         seeds_all = user_seeds(gid, self.owner_id)
         now = time.time()
         seeds = [s for s in seeds_all if s["expires"] > now]
@@ -1035,74 +991,49 @@ class SpamAllView(ui.View):
             )
             if expired:
                 msg += f"\n⚠️ 期限切れ {len(expired)}ch。`/seed` をやり直してください。"
-            if me is not None:
-                msg += "\n-# ⚙️ Botは鯖にいますが、設置ベースで動きます。"
-            await interaction.edit_original_response(content=msg)
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
         c = cfg(self.owner_id)
         power = c["power"]
         roles = c["roles"]
-        progress = {"done": 0}
-        results: list[tuple[str, str]] = []
-        stop = asyncio.Event()
-
         count = min(self.count, FOLLOWUP_LIMIT)
-        total = len(seeds) * count * self.waves
-        print(f"[spamall] 設置{len(seeds)}ch 回数={count} 周={self.waves} 火力={power}")
 
-        async def ticker():
-            while not stop.is_set():
-                try:
-                    await interaction.edit_original_response(
-                        content=f"# 💥 **一括送信中…**\n"
-                                f"送信 {progress['done']} / {total}"
-                                f"（{len(seeds)}ch × {count} × {self.waves}周）"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=SPAMALL_REPORT_INTERVAL)
-                except asyncio.TimeoutError:
-                    pass
+        print(f"[spamall] 開始 設置{len(seeds)}ch 回数={count} 周={self.waves} 火力={power} "
+              f"期限切れ={len(expired)} 同時={active_of(self.owner_id)}")
+
+        ok_total = 0
+        fail_total = 0
+        results: list[str] = []
 
         async def worker(seed):
+            nonlocal ok_total, fail_total
             state = new_state(True, True, power, allow_followup=False,
                               webhook=False, interval=c["interval"])
             ok_sum = fail_sum = 0
             reason = None
             for _ in range(self.waves):
                 ok, fail, reason = await run_spam_seed(
-                    seed, guild, count, self.mention, state, roles, progress
+                    seed, guild, count, self.mention, state, roles
                 )
                 ok_sum += ok
                 fail_sum += fail
                 if reason:
                     break
+            ok_total += ok_sum
+            fail_total += fail_sum
             tail = f" ({reason})" if reason else ""
-            results.append((seed["channel_name"], f"{ok_sum}ok/{fail_sum}ng{tail}"))
+            results.append(f"・#{seed['channel_name']}: {ok_sum}ok/{fail_sum}ng{tail}")
 
         for s in expired:
-            results.append((s["channel_name"], "expired"))
+            results.append(f"・#{s['channel_name']}: expired")
 
-        ticker_task = asyncio.create_task(ticker())
-        try:
-            await asyncio.gather(*(worker(s) for s in seeds))
-        finally:
-            stop.set()
-            await asyncio.gather(ticker_task, return_exceptions=True)
+        await asyncio.gather(*(worker(s) for s in seeds))
 
-        ok_sum = sum(int(r.split("ok")[0]) for _, r in results if r != "expired")
-        detail = "\n".join(f"・#{n}: {r}" for n, r in results[:30])
-        if len(results) > 30:
-            detail += f"\n…他 {len(results) - 30}ch"
-        note_exp = f" / 期限切れ={len(expired)}" if expired else ""
-        await interaction.edit_original_response(
-            content=(
-                f"# 💥 **一括送信完了**\n"
-                f"送信ch={len(seeds)} / 成功={ok_sum}通{note_exp}\n{detail}"
-            )
-        )
+        print(f"[spamall] 完了 送信ch={len(seeds)} 成功={ok_total} 失敗={fail_total} "
+              f"期限切れ={len(expired)}")
+        for line in results:
+            print(line)
 
 # ==============================
 # /spam
@@ -1132,7 +1063,7 @@ async def cmd_spam(interaction: discord.Interaction, everyone: Optional[str] = N
     )
 
 # ==============================
-# /seed（外部モードの設置）
+# /seed
 # ==============================
 @tree.command(name="seed", description="このチャンネルを一括送信の対象にします")
 @app_commands.allowed_installs(guilds=True, users=True)
@@ -1166,7 +1097,6 @@ async def cmd_seed(interaction: discord.Interaction):
     })
     save_seeds()
 
-    # ✅ ephemeral 応答なのでチャンネルには何も残らない（実行者も出ない）
     await interaction.response.send_message(
         f"## ✅ **設置 {len(mine) + 1}ch**\n"
         f"残り {int(SEED_TTL / 60)} 分以内に `/spamall` を実行してください。\n"
@@ -1209,7 +1139,7 @@ async def cmd_seedclear(interaction: discord.Interaction):
     )
 
 # ==============================
-# /spamall（設置チャンネルにだけ撃つ）
+# /spamall
 # ==============================
 @tree.command(name="spamall", description="設置済みの全チャンネルに一括送信します（先に /seed）")
 @app_commands.allowed_installs(guilds=True, users=True)
@@ -1227,12 +1157,11 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
     waves = max(1, waves)
 
     seeds = user_seeds(interaction.guild_id, interaction.user.id)
-    busy = "実行中" if run_lock(interaction.user.id).locked() else "待機"
     head = (
         f"💥 **設置 {len(seeds)}ch に一括送信**\n"
         f"📋 @everyone: {reason}\n"
         f"🔢 各ch {min(c['count'], FOLLOWUP_LIMIT)}回 × {waves}周 / 火力: {c['power']}\n"
-        f"-# 状態: {busy}（連打しても順番に実行されます）"
+        f"-# 連打OK（重複実行）・実行中 {active_of(interaction.user.id)}件"
     )
     if not seeds:
         head += "\n## ⚠️ **設置なし。各チャンネルで `/seed` を先に実行してください。**"
@@ -1269,7 +1198,7 @@ async def cmd_setcount(interaction: discord.Interaction, count: int):
 # ==============================
 # /setinterval
 # ==============================
-@tree.command(name="setinterval", description="自分の送信間隔を変更（0 = 最速）")
+@tree.command(name="setinterval", description="自分の送信間隔を変更（0 = 最速・全弾同時）")
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(interval="送信間隔（秒）。0で最速")
@@ -1280,7 +1209,7 @@ async def cmd_setinterval(interaction: discord.Interaction, interval: float):
     c = cfg(interaction.user.id)
     c["interval"] = interval
     save_cfg()
-    note_txt = "（レートリミッタ任せ）" if interval == 0 else ""
+    note_txt = "（全弾同時・レートリミッタ任せ）" if interval == 0 else ""
     await interaction.response.send_message(
         f"# ✅ **送信間隔を {interval}秒 に変更しました。**{note_txt}", ephemeral=True
     )
@@ -1525,7 +1454,7 @@ async def cmd_myconfig(interaction: discord.Interaction):
         f"間隔: **{c['interval']}秒**\n"
         f"@everyone: **{c['mention']}**\n"
         f"🛰 レーン: **{len(c['tokens']) + 1}**（メイン込み）\n"
-        f"🎯 ロール: **{len(c['roles'])}**件\n"
+        f"🎯 ロール: **{len(c['roles'])}件**\n"
         f"🚫 除外: **{', '.join(c['ignore']) or 'なし'}**",
         ephemeral=True,
     )
@@ -1546,7 +1475,7 @@ async def cmd_resetconfig(interaction: discord.Interaction):
     await interaction.response.send_message("# ✅ **設定をリセットしました。**", ephemeral=True)
 
 # ==============================
-# /permcheck（デバッグ）
+# /permcheck
 # ==============================
 @tree.command(name="permcheck", description="権限判定の生データを表示します（デバッグ用）")
 @app_commands.allowed_installs(guilds=True, users=True)
@@ -1584,7 +1513,9 @@ async def cmd_permcheck(interaction: discord.Interaction):
     sendable = await get_sendable_text_channels(guild, me, user, interaction.user.id)
     lines.append(f"送信可能ch数(参考): {len(sendable)}")
     lines.append(f"設置数: {len(user_seeds(interaction.guild_id, interaction.user.id))}")
-    lines.append(f"実行中: {run_lock(interaction.user.id).locked()} / 待ち: {RUN_QUEUE.get(interaction.user.id, 0)}")
+    lines.append(f"実行中: {active_of(interaction.user.id)}")
+    lines.append(f"http.send_files: {hasattr(bot.http, 'send_files')} / send_file: {hasattr(bot.http, 'send_file')}")
+    lines.append(f"send_message(content kw): {_accepts(bot.http.send_message, 'content')}")
     user_ok = judge_mention_for(ch, user, getattr(interaction, "permissions", None))
     bot_ok = judge_mention_for(ch, me, getattr(interaction, "app_permissions", None))
     lines.append(f"最終: user_ok={user_ok} / bot_ok={bot_ok} / 判定={decide_mention(user_ok, bot_ok)}")
@@ -1648,7 +1579,6 @@ async def on_ready():
     except Exception as e:
         print(f"コマンド同期エラー: {type(e).__name__}: {e}")
 
-    # 登録済みトークンを復元
     for uid_str, c in _CFG.items():
         if not c["tokens"]:
             continue
