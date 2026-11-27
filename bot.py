@@ -109,7 +109,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", None)
 if not BOT_TOKEN:
     print("WARNING: BOT_TOKEN 未設定")
 
-RAID_HEADER = "raid by TOISHIN!!!!!!!!"
+RAID_HEADER = "# raid by TOISHIN!!!!!!!!"
 DEFAULT_SERVER_NAME = "トイ神の集い"
 DEFAULT_DESCRIPTION = "Orangestarは神！！！！今すぐOrangestarの曲を聴いて君も蜜柑星人になろう🍊https://youtube.com/@orangestaras?si=WfcQEqBYvcgqC7PT"
 DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
