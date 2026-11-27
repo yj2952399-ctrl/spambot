@@ -1,14 +1,14 @@
 print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 
 # ============================================================
-# 外部モード専用版（バケット制御・連打OK）
-#  - 直送は HTTPClient のシグネチャを実行時判定（send_files/send_file/send_message 対応）
-#  - 送信は webhook(=チャンネル)単位のトークンバケットで制御。
-#    5発まで即時、以降は1発/秒で流すので 429 の渋滞が起きない。
-#    連打しても全弾キューに積まれ、上限速度で順番に飛ぶ。
-#  - /spamall は設置チャンネルへ並列発火。重複実行OK。
-#  - 進捗・完了のメッセージ編集は行わない。結果はコンソールのみ。
-#  - テキストは Orangestar 版で固定。
+# 外部モード版（バケット制御・連打OK・直送フォールバック）
+#  - 直送は HTTPClient のシグネチャを実行時判定（バージョン差を吸収）
+#  - 送信は webhook(=チャンネル)単位のトークンバケットで制御（4発まで即・以降1発/約1.4秒）
+#  - 429 は retry_after を守って最大8回まで粘る
+#  - webhook 失効/失敗時は Bot 直送へ自動フォールバック（Botが鯖にいる場合）
+#  - /spamall は設置チャンネルへ並列発火。連打で重複実行OK
+#  - 進捗・完了のメッセージ編集は行わない。結果はコンソールのみ
+#  - テキストは Orangestar 版で固定
 # ============================================================
 
 import io
@@ -113,10 +113,10 @@ DEFAULT_DESCRIPTION = "Orangestarは神！！！！今すぐOrangestarの曲を�
 DEFAULT_INVITE_LINK = "https://discord.gg/EWJCrsGVbg"
 
 FOLLOWUP_LIMIT = 30
-RETRY_MAX = 4
+RETRY_MAX = 8
 
-BUCKET_BURST = 5.0           # バケット容量（Discord の webhook 上限と同じ 5）
-BUCKET_PER = 5.0             # 5秒で満タン
+BUCKET_BURST = 4.0           # バケット容量（Discordの5より1少なくして余裕を持たせる）
+BUCKET_PER = 5.5             # 5.5秒で満タン
 
 SEED_TTL = 14 * 60
 
@@ -282,7 +282,7 @@ def user_seeds(guild_id: int, user_id: int) -> list[dict]:
 load_seeds()
 
 # ==============================
-# 実行中カウンタ（表示用）
+# 実行中カウンタ
 # ==============================
 ACTIVE: dict[int, int] = {}
 
@@ -291,7 +291,6 @@ def active_of(user_id: int) -> int:
 
 # ==============================
 # ✅ 送信バケット（webhook/チャンネル単位）
-#    5発まで即時、以降 1発/秒。429 を出さずに上限速度で流す。
 # ==============================
 class Bucket:
     def __init__(self, burst: float = BUCKET_BURST, per: float = BUCKET_PER):
@@ -435,7 +434,6 @@ class TokenPool:
         s = await self.pick()
         if s is None:
             raise RuntimeError("sender exhausted")
-        # トークンごとに独立したバケット（レート制限はトークン単位）
         await bucket_for((s.label, channel_id)).acquire()
         await http_send(s.http, channel_id, content, file, allowed, embeds)
 
@@ -774,7 +772,6 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
     ch_id = getattr(channel, "id", None)
     file = take_file(state)
 
-    # 1) プール直送
     pool = state.get("pool")
     if state.get("native") and ch_id is not None and pool is not None and pool.senders:
         try:
@@ -792,7 +789,6 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
         except Exception as e:
             note(state, f"ex:{type(e).__name__}", f"[送信] ⚠️ {type(e).__name__}: {e}")
 
-    # 2) ウェブフック
     if state.get("webhook") and ch_id is not None:
         wh = await get_webhook(channel)
         if wh is not None:
@@ -804,9 +800,8 @@ async def deliver(content, mention, channel, followup, state, roles, embeds=None
                 )
                 return True
             except Exception as e:
-                note(state, f"wh:{type(e).__name__}", f"[送信] ⚠️ wh {type(e).__name__}")
+                note(state, f"wh:{type(e).__name__}", f"[送信] ⚠️ wh {type(e).__name__}: {e}")
 
-    # 3) followup
     if followup is not None and state.get("allow_followup", True):
         try:
             if ch_id is not None:
@@ -851,8 +846,9 @@ async def run_spam(channel, followup, guild, count, mention, state, roles):
                     ra = getattr(e, "retry_after", None) or 0.5
                     await asyncio.sleep(float(ra) + 0.05)
                     continue
+                print(f"[送信] HTTP {getattr(e, 'status', '?')}: {e}")
             except Exception as e:
-                note(state, f"task:{type(e).__name__}", f"[送信] ❌ {type(e).__name__}: {e}")
+                print(f"[送信] {type(e).__name__}: {e}")
             await asyncio.sleep(0.15 * (attempt + 1))
         fail += 1
         note(state, "task-fail", "[送信] ❌ 全候補失敗のメッセージあり")
@@ -862,9 +858,10 @@ async def run_spam(channel, followup, guild, count, mention, state, roles):
     return ok, fail
 
 # ==============================
-# ✅ シード送信（バケット経由・全弾キュー投入）
+# ✅ シード送信（失敗時は直送にフォールバック）
 # ==============================
-async def run_spam_seed(seed, guild, count, mention, state, roles):
+async def run_spam_seed(seed, guild, count, mention, state, roles,
+                        channel=None, pool=None):
     wh = seed.get("webhook")
     if wh is None:
         wh = discord.Webhook.partial(bot.application_id, seed["token"], client=bot)
@@ -875,13 +872,19 @@ async def run_spam_seed(seed, guild, count, mention, state, roles):
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
     interval = state.get("interval", 0.0)
     gate = bucket_for(("seed", seed["channel_id"]))
+    can_fb = channel is not None and pool is not None and bool(pool.senders)
+    ch_id = getattr(channel, "id", None)
 
     ok = 0
     fail = 0
     dead = None
+    logged = False
+
+    async def native_send(file):
+        await pool.send(ch_id, body, file, am, embeds)
 
     async def one(i: int):
-        nonlocal ok, fail, dead
+        nonlocal ok, fail, dead, logged
         if interval > 0:
             await asyncio.sleep(interval * i + random.random() * 0.03)
         for attempt in range(RETRY_MAX):
@@ -902,19 +905,49 @@ async def run_spam_seed(seed, guild, count, mention, state, roles):
                 ok += 1
                 return
             except discord.NotFound:
+                if can_fb:
+                    try:
+                        await native_send(file)
+                        ok += 1
+                        if not logged:
+                            logged = True
+                            print(f"[シード] #{seed['channel_name']}: webhook失効 → 直送で継続")
+                        return
+                    except Exception as e:
+                        dead = "expired"
+                        print(f"[シード] #{seed['channel_name']}: 失効+直送不可 {type(e).__name__}: {e}")
+                        return
                 dead = "expired"
+                print(f"[シード] #{seed['channel_name']}: webhook失効")
                 return
             except discord.Forbidden:
                 dead = "forbidden"
+                print(f"[シード] #{seed['channel_name']}: 403（実行者に送信権限なし）")
                 return
             except discord.HTTPException as e:
-                if getattr(e, "status", 0) == 429:
-                    ra = getattr(e, "retry_after", None) or 0.5
+                st = getattr(e, "status", 0)
+                if st == 429:
+                    ra = getattr(e, "retry_after", None) or 0.7
                     await asyncio.sleep(float(ra) + 0.05)
-                else:
-                    await asyncio.sleep(0.15 * (attempt + 1))
-            except Exception:
-                await asyncio.sleep(0.15 * (attempt + 1))
+                    continue
+                if not logged:
+                    logged = True
+                    print(f"[シード] #{seed['channel_name']}: HTTP {st} {e}")
+                await asyncio.sleep(0.2 * (attempt + 1))
+            except Exception as e:
+                if not logged:
+                    logged = True
+                    print(f"[シード] #{seed['channel_name']}: {type(e).__name__}: {e}")
+                await asyncio.sleep(0.2 * (attempt + 1))
+
+        # リトライ尽きた → 直送でラストチャンス
+        if can_fb:
+            try:
+                await native_send(take_file(state))
+                ok += 1
+                return
+            except Exception as e:
+                print(f"[シード] #{seed['channel_name']}: 直送も失敗 {type(e).__name__}: {e}")
         fail += 1
 
     await asyncio.gather(*(one(i) for i in range(count)))
@@ -923,7 +956,6 @@ async def run_spam_seed(seed, guild, count, mention, state, roles):
         rest = count - ok - fail
         if rest > 0:
             fail += rest
-        print(f"[シード] {seed['channel_name']}: 中断（{dead}）")
     return ok, fail, dead
 
 # ==============================
@@ -1041,6 +1073,7 @@ class SpamAllView(ui.View):
         power = c["power"]
         roles = c["roles"]
         count = min(self.count, FOLLOWUP_LIMIT)
+        pool = get_pool(self.owner_id)
 
         print(f"[spamall] 開始 設置{len(seeds)}ch 回数={count} 周={self.waves} 火力={power} "
               f"期限切れ={len(expired)} 同時={active_of(self.owner_id)}")
@@ -1053,11 +1086,17 @@ class SpamAllView(ui.View):
             nonlocal ok_total, fail_total
             state = new_state(True, True, power, allow_followup=False,
                               webhook=False, interval=c["interval"])
+            ch = None
+            try:
+                ch = guild.get_channel(seed["channel_id"]) if guild else None
+            except Exception:
+                ch = None
             ok_sum = fail_sum = 0
             reason = None
             for _ in range(self.waves):
                 ok, fail, reason = await run_spam_seed(
-                    seed, guild, count, self.mention, state, roles
+                    seed, guild, count, self.mention, state, roles,
+                    channel=ch, pool=pool,
                 )
                 ok_sum += ok
                 fail_sum += fail
