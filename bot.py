@@ -3,9 +3,9 @@ print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 # ============================================================
 # 外部モード完全対応版（seed=5通制・🧬ボタンで繁殖・全応答ephemeral）
 #  - /seed の🧬ボタン押下 = 新しいインタラクション = 新しいトークン5通
-#  - 繁殖確認は defer→edit_original_response（followup枠を消費しない）
+#  - 繁殖確認は元メッセージを編集（常に画面に残る）＋押下応答は1行
 #  - ボタンは永続ビュー（再起動後も有効）・押せるのは実行者だけ
-#  - 繁殖で増えた設置もすべてephemeral（押した人にしか見えない）
+#  - /spamall は既定で容量を使い切る（full:false で count 準拠）
 #  - 枯渇した seed は捨てて次へ。全滅時のみ直送フォールバック
 #  - 40094 は即枯渇扱い（リトライしない）
 #  - webhook は Bot が鯖にいる時だけ試す（外部モードでは作らない）
@@ -1117,9 +1117,21 @@ class SeedView(ui.View):
                      if s["user_id"] == interaction.user.id and s["channel_id"] == cid])
         cap_txt = "無制限" if total >= 10 ** 6 else f"{total}通"
 
+        # 元の /seed メッセージを更新（ephemeralでも常に画面に残る）
+        try:
+            await interaction.message.edit(
+                content=(
+                    f"## 🧬 **繁殖中 {len(mine) + 1}本**\n"
+                    f"このチャンネルの残り送信可能数: **{cap_txt}**\n"
+                    f"🧬 を押すたびに **+{TOKEN_CAPACITY}通** 増えます（連打可）\n"
+                    f"-# 残り {int(SEED_TTL / 60)} 分有効。増やしたら `/spamall` を実行。"
+                )
+            )
+        except Exception as e:
+            print(f"[繁殖] 元メッセージ更新失敗: {type(e).__name__}: {e}")
+
         await interaction.edit_original_response(
-            content=f"🧬 **繁殖 {len(mine) + 1}本** / このチャンネルの残り **{cap_txt}**\n"
-                    f"-# まだ押せます。`/spamall` で撒いてください。"
+            content=f"🧬 **+{TOKEN_CAPACITY}通** → 残り **{cap_txt}**"
         )
 
 # ==============================
@@ -1177,13 +1189,14 @@ class SpamView(ui.View):
 
 class SpamAllView(ui.View):
     def __init__(self, mention: bool, reason: str, count: int, owner_id: int,
-                 waves: int = 1):
+                 waves: int = 1, full: bool = True):
         super().__init__(timeout=None)
         self.mention = mention
         self.reason = reason
         self.count = count
         self.owner_id = owner_id
         self.waves = max(1, waves)
+        self.full = full
 
     @ui.button(label="全チャンネルに送信", style=discord.ButtonStyle.danger, emoji="💥")
     async def all_handler(self, interaction: discord.Interaction, btn: ui.Button):
@@ -1248,7 +1261,7 @@ class SpamAllView(ui.View):
         total_cap = sum(channel_capacity(gid, self.owner_id, cid) for cid in by_ch)
 
         print(f"[spamall] 開始 ch={len(by_ch)} 希望={self.count}周={self.waves} "
-              f"火力={power} 総容量={total_cap} 期限切れ={len(expired)} "
+              f"火力={power} 総容量={total_cap} full={self.full} 期限切れ={len(expired)} "
               f"同時={active_of(self.owner_id)}")
 
         ok_total = 0
@@ -1273,7 +1286,7 @@ class SpamAllView(ui.View):
                 if cap <= 0:
                     reason = "枯渇"
                     break
-                n = min(self.count, cap)
+                n = cap if self.full else min(self.count, cap)
                 ok, fail, reason = await run_spam_seed(
                     ch_seeds, ch, guild, n, self.mention, state, roles, pool
                 )
@@ -1427,14 +1440,18 @@ async def cmd_seedclear(interaction: discord.Interaction):
 @app_commands.describe(
     everyone="@everyone の扱い（未指定＝自分の設定）",
     waves="全体を何周するか",
+    count="各chの送信数（省略＝設定値）",
+    full="容量を使い切る（countを無視）",
 )
 @app_commands.choices(everyone=MENTION_CHOICES)
 async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] = None,
-                      waves: int = 1):
+                      waves: int = 1, count: Optional[int] = None,
+                      full: bool = True):
     c = cfg(interaction.user.id)
     mode = everyone or c["mention"]
     mention, reason = await resolve_mention(interaction, mode)
     waves = max(1, waves)
+    want = count if (count and count > 0) else c["count"]
 
     seeds = user_seeds(interaction.guild_id, interaction.user.id)
     by_ch: dict[int, list[dict]] = {}
@@ -1446,7 +1463,8 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
     head = (
         f"💥 **設置 {len(by_ch)}ch に一括送信**\n"
         f"📋 @everyone: {reason}\n"
-        f"🔢 各ch {c['count']}回 × {waves}周 / 火力: {c['power']}\n"
+        f"🔢 各ch {want}回 × {waves}周 / 火力: {c['power']}"
+        f"{'（容量上限まで）' if full else ''}\n"
         f"🔋 総容量 {cap_total if cap_total < 10 ** 6 else '無制限'}通"
         f"（seed 1本 = {TOKEN_CAPACITY}通）\n"
         f"-# 連打OK（重複実行）・実行中 {active_of(interaction.user.id)}件"
@@ -1456,8 +1474,8 @@ async def cmd_spamall(interaction: discord.Interaction, everyone: Optional[str] 
 
     await interaction.response.send_message(
         head,
-        view=SpamAllView(mention=mention, reason=reason, count=c["count"],
-                         owner_id=interaction.user.id, waves=waves),
+        view=SpamAllView(mention=mention, reason=reason, count=want,
+                         owner_id=interaction.user.id, waves=waves, full=full),
         ephemeral=True,
     )
 
