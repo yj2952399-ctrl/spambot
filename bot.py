@@ -3,12 +3,12 @@ print("✅ ✅ ✅ プログラム開始！一番最初の行まで到達！")
 # ============================================================
 # 外部モード完全対応版（seed=5通制・🧬ボタンで繁殖・全応答ephemeral）
 #  - /seed の🧬ボタン押下 = 新しいインタラクション = 新しいトークン5通
-#  - 繁殖確認は元メッセージを編集（常に画面に残る）＋押下応答は1行
-#  - ボタンは永続ビュー（再起動後も有効）・押せるのは実行者だけ
+#  - 元メッセージの更新は「元トークン + webhookメッセージ編集」で行う
+#    （ephemeralはchannelメッセージ編集では403になる。編集はfollowup枠を消費しない）
+#  - レート制限はアプリ単位で共有されるので、送信バケットはアプリ/ウェブフック単位
 #  - /spamall は既定で容量を使い切る（full:false で count 準拠）
 #  - 枯渇した seed は捨てて次へ。全滅時のみ直送フォールバック
 #  - 40094 は即枯渇扱い（リトライしない）
-#  - webhook は Bot が鯖にいる時だけ試す（外部モードでは作らない）
 #  - seeds.json は webhook オブジェクトを除外して保存
 # ============================================================
 
@@ -119,8 +119,9 @@ RETRY_MAX = 6
 
 MAX_SEEDS_PER_CHANNEL = 40
 
+# Discordの実行レート(5回/2秒)に寄せる。アプリ単位で共有される点に注意
 BUCKET_BURST = 4.0
-BUCKET_PER = 5.5
+BUCKET_PER = 1.8
 
 SEED_TTL = 14 * 60
 
@@ -256,6 +257,7 @@ def load_seeds():
                     "user_id": int(s["user_id"]),
                     "expires": float(s["expires"]),
                     "used": int(s.get("used", 0)),
+                    "msg_id": int(s["msg_id"]) if s.get("msg_id") else None,
                 }
                 if _seed_ok(item):
                     keep.append(item)
@@ -281,6 +283,7 @@ def save_seeds():
                     "user_id": s["user_id"],
                     "expires": s["expires"],
                     "used": int(s.get("used", 0)),
+                    "msg_id": s.get("msg_id"),
                 })
             data[str(gid)] = rows
         tmp = SEED_PATH + ".tmp"
@@ -321,7 +324,7 @@ def channel_capacity(guild_id: int, user_id: int, channel_id: int) -> int:
     return sum(seed_remaining(s) for s in seeds_of_channel(guild_id, user_id, channel_id))
 
 def add_seed(gid: int, cid: int, uid: int, token: str, name: str,
-             webhook=None) -> dict:
+             webhook=None, msg_id: Optional[int] = None) -> dict:
     seed = {
         "token": token,
         "webhook_id": getattr(webhook, "id", None),
@@ -331,6 +334,7 @@ def add_seed(gid: int, cid: int, uid: int, token: str, name: str,
         "user_id": uid,
         "expires": time.time() + SEED_TTL,
         "used": 0,
+        "msg_id": msg_id,
     }
     SEEDS.setdefault(gid, []).append(seed)
     save_seeds()
@@ -347,7 +351,7 @@ def active_of(user_id: int) -> int:
     return ACTIVE.get(user_id, 0)
 
 # ==============================
-# ✅ 送信バケット（チャンネル単位）
+# ✅ 送信バケット（アプリ/ウェブフック単位）
 # ==============================
 class Bucket:
     def __init__(self, burst: float = BUCKET_BURST, per: float = BUCKET_PER):
@@ -380,6 +384,12 @@ def bucket_for(key: tuple) -> Bucket:
         b = Bucket()
         _buckets[key] = b
     return b
+
+def gate_for_seed(seed: dict) -> Bucket:
+    """インタラクション経由の送信はアプリ単位で共有、webhookはwebhook単位"""
+    if seed.get("webhook_id"):
+        return bucket_for(("seedwh", seed["webhook_id"]))
+    return bucket_for(("seedapp", bot.application_id))
 
 # ==============================
 # キープアライブ
@@ -938,12 +948,13 @@ async def _seed_webhook(seed: dict, channel):
             print(f"[シード] webhook作成失敗 → トークンで継続: {type(e).__name__}: {e}")
     return discord.Webhook.partial(bot.application_id, seed["token"], client=bot)
 
-async def _send_via_seed(seed, body, embeds, am, file, channel, gate) -> str:
+async def _send_via_seed(seed, body, embeds, am, file, channel) -> str:
     """ok / exhausted / dead / retry を返す"""
     kw = {"content": body, "embeds": embeds or [], "allowed_mentions": am, "wait": False}
     if file is not None:
         kw["file"] = file
 
+    gate = gate_for_seed(seed)
     wh = await _seed_webhook(seed, channel)
     try:
         await gate.acquire()
@@ -955,7 +966,7 @@ async def _send_via_seed(seed, body, embeds, am, file, channel, gate) -> str:
             seed["webhook_id"] = seed["webhook_token"] = None
             wh = await _seed_webhook(seed, channel)
             try:
-                await gate.acquire()
+                await gate_for_seed(seed).acquire()
                 await wh.send(**kw)
                 seed["used"] = int(seed.get("used", 0)) + 1
                 return "ok"
@@ -986,7 +997,6 @@ async def run_spam_seed(seeds: list[dict], channel, guild, count, mention, state
     am = discord.AllowedMentions(everyone=mention, roles=bool(roles), users=False)
     interval = state.get("interval", 0.0)
     ch_id = getattr(channel, "id", None)
-    gate = bucket_for(("seed", seeds[0]["channel_id"] if seeds else ch_id))
     can_fb = channel is not None and pool is not None and bool(pool.senders)
 
     lock = asyncio.Lock()
@@ -1020,7 +1030,7 @@ async def run_spam_seed(seeds: list[dict], channel, guild, count, mention, state
                     file.fp.seek(0)
                 except Exception:
                     pass
-            r = await _send_via_seed(seed, body, embeds, am, file, channel, gate)
+            r = await _send_via_seed(seed, body, embeds, am, file, channel)
             if r == "ok":
                 ok += 1
                 return
@@ -1060,6 +1070,24 @@ def _view_owner(interaction) -> int:
         SEEDVIEW_OWNER[interaction.message.id] = uid
         return uid
     return 0
+
+async def edit_seed_message(gid: int, cid: int, uid: int, msg_id: int, content: str) -> bool:
+    """ephemeralメッセージは channel API では403。元トークンでwebhookメッセージ編集する"""
+    origin = None
+    for s in (SEEDS.get(gid) or []):
+        if (s["user_id"] == uid and s["channel_id"] == cid
+                and s.get("msg_id") == msg_id):
+            origin = s
+            break
+    if origin is None:
+        return False
+    try:
+        wh = discord.Webhook.partial(bot.application_id, origin["token"], client=bot)
+        await wh.edit_message(msg_id, content=content)
+        return True
+    except Exception as e:
+        print(f"[繁殖] 元メッセージ更新失敗: {type(e).__name__}: {e}")
+        return False
 
 class SeedView(ui.View):
     """🧬を押すたびに、そのチャンネルの送信枠を5通積む。応答は全てephemeral。"""
@@ -1110,25 +1138,22 @@ class SeedView(ui.View):
         except Exception:
             wh = None
 
-        add_seed(gid, cid, interaction.user.id, interaction.token, name, wh)
+        add_seed(gid, cid, interaction.user.id, interaction.token, name, wh,
+                 msg_id=interaction.message.id)
 
         total = sum(seed_remaining(s) for s in
                     [s for s in (SEEDS.get(gid) or [])
                      if s["user_id"] == interaction.user.id and s["channel_id"] == cid])
         cap_txt = "無制限" if total >= 10 ** 6 else f"{total}通"
 
-        # 元の /seed メッセージを更新（ephemeralでも常に画面に残る）
-        try:
-            await interaction.message.edit(
-                content=(
-                    f"## 🧬 **繁殖中 {len(mine) + 1}本**\n"
-                    f"このチャンネルの残り送信可能数: **{cap_txt}**\n"
-                    f"🧬 を押すたびに **+{TOKEN_CAPACITY}通** 増えます（連打可）\n"
-                    f"-# 残り {int(SEED_TTL / 60)} 分有効。増やしたら `/spamall` を実行。"
-                )
-            )
-        except Exception as e:
-            print(f"[繁殖] 元メッセージ更新失敗: {type(e).__name__}: {e}")
+        # 元の /seed メッセージを「元トークン」で編集（followup枠を消費しない）
+        await edit_seed_message(
+            gid, cid, interaction.user.id, interaction.message.id,
+            f"## 🧬 **繁殖中 {len(mine) + 1}本**\n"
+            f"このチャンネルの残り送信可能数: **{cap_txt}**\n"
+            f"🧬 を押すたびに **+{TOKEN_CAPACITY}通** 増えます（連打可）\n"
+            f"-# 残り {int(SEED_TTL / 60)} 分有効。増やしたら `/spamall` を実行。"
+        )
 
         await interaction.edit_original_response(
             content=f"🧬 **+{TOKEN_CAPACITY}通** → 残り **{cap_txt}**"
@@ -1372,7 +1397,7 @@ async def cmd_seed(interaction: discord.Interaction):
         wh = None
 
     name = getattr(interaction.channel, "name", None) or str(cid)
-    add_seed(gid, cid, interaction.user.id, interaction.token, name, wh)
+    seed = add_seed(gid, cid, interaction.user.id, interaction.token, name, wh)
 
     total = sum(seed_remaining(s) for s in
                 [s for s in (SEEDS.get(gid) or [])
@@ -1388,7 +1413,9 @@ async def cmd_seed(interaction: discord.Interaction):
         ephemeral=True,
     )
     try:
+        seed["msg_id"] = msg.id
         SEEDVIEW_OWNER[msg.id] = interaction.user.id
+        save_seeds()
     except Exception:
         pass
 
